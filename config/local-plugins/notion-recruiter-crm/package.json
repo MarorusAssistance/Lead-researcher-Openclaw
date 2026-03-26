@@ -1,0 +1,27 @@
+{
+  "name": "notion-recruiter-crm",
+  "version": "0.1.0",
+  "description": "OpenClaw native plugin to use a Notion data source as a recruiter CRM",
+  "type": "module",
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@notionhq/client": "^5.0.1",
+    "@sinclair/typebox": "^0.34.48"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "openclaw": "^2026.3.13",
+    "typescript": "^5.9.3"
+  }
+}

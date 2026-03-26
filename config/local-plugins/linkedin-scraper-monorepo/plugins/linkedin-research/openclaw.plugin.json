@@ -1,0 +1,25 @@
+{
+  "id": "linkedin-research",
+  "name": "LinkedIn Research",
+  "description": "Fetch LinkedIn profile and company research from an external HTTP worker",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "workerBaseUrl": {
+        "type": "string",
+        "minLength": 1
+      },
+      "requestTimeoutMs": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "debug": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "workerBaseUrl"
+    ]
+  }
+}

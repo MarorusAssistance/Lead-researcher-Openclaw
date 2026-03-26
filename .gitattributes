@@ -1,0 +1,16 @@
+* text=auto
+
+# Linux / Docker / config files -> LF
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.env.example text eol=lf
+
+# Windows scripts -> CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf

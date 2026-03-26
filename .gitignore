@@ -1,0 +1,105 @@
+# =========================
+# OS / editor
+# =========================
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+
+# =========================
+# Logs / temp
+# =========================
+*.log
+logs/
+tmp/
+temp/
+
+# =========================
+# Secrets / env
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Runtime / local state
+# =========================
+openclaw-data/
+.openclaw/
+.clawhub/
+linkedin-research-worker-debug/
+linkedin-research-worker-state/
+
+# =========================
+# Generic deps / build outputs
+# =========================
+node_modules/
+dist/
+build/
+out/
+coverage/
+.cache/
+.npm/
+.pnpm-store/
+.yarn/
+.parcel-cache/
+.next/
+.turbo/
+
+# =========================
+# Python / misc caches
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# =========================
+# Local databases / archives
+# =========================
+*.db
+*.sqlite
+*.sqlite3
+*.zip
+*.tar
+*.gz
+*.7z
+
+# =========================
+# Keep config/ tracked, but ignore generated junk inside plugins
+# =========================
+config/local-plugins/**/node_modules/
+config/local-plugins/**/dist/
+config/local-plugins/**/build/
+config/local-plugins/**/out/
+config/local-plugins/**/coverage/
+config/local-plugins/**/.next/
+config/local-plugins/**/.turbo/
+config/local-plugins/**/.cache/
+config/local-plugins/**/__pycache__/
+config/local-plugins/**/.pytest_cache/
+config/local-plugins/**/.mypy_cache/
+config/local-plugins/**/.venv/
+config/local-plugins/**/venv/
+config/local-plugins/**/.env
+config/local-plugins/**/.env.*
+config/local-plugins/**/*.log
+
+# =========================
+# Nested git repos / submodule leftovers inside config
+# =========================
+config/**/.git
+config/**/.gitmodules
+
+# =========================
+# Optional: ignore root package-lock if there is no root package.json
+# Remove this line if your repo root really uses npm
+# =========================
+package-lock.json
+docker-compose.yml

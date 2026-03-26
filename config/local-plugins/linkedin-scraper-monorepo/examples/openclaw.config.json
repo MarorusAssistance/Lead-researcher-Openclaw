@@ -1,0 +1,54 @@
+{
+  "plugins": {
+    "entries": {
+      "linkedin-research": {
+        "enabled": true,
+        "config": {
+          "workerBaseUrl": "http://127.0.0.1:8787",
+          "requestTimeoutMs": 30000,
+          "debug": false
+        }
+      },
+      "notion-crm-writer": {
+        "enabled": true,
+        "config": {
+          "notionVersion": "2022-06-28",
+          "databaseId": "3294e0be-f60f-801c-82dd-c9aae407fce0",
+          "propertyMap": {
+            "name": "Name",
+            "linkedinUrl": "LinkedIn URL",
+            "company": "Company",
+            "role": "Role",
+            "type": "Type",
+            "region": "Region",
+            "fitScore": "Fit Score",
+            "status": "Status",
+            "sourceNotes": "Source Notes",
+            "hook1": "Hook 1",
+            "hook2": "Hook 2",
+            "fitSummary": "Fit Summary"
+          },
+          "optionalFields": [
+            "status",
+            "connectionNoteDraft",
+            "dmDraft",
+            "followup1Draft",
+            "followup2Draft",
+            "lastReplySummary",
+            "interactionLog",
+            "lastTouchAt",
+            "nextActionAt",
+            "nextActionType",
+            "cvSent",
+            "cvUrl"
+          ],
+          "typeValues": {
+            "person": "Person",
+            "company": "Company"
+          },
+          "defaultStatusValue": "New"
+        }
+      }
+    }
+  }
+}

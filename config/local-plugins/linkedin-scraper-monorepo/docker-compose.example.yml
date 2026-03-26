@@ -1,0 +1,22 @@
+services:
+  linkedin-research-worker:
+    build:
+      context: .
+      dockerfile: ./workers/linkedin-research-worker/Dockerfile
+    container_name: linkedin-research-worker
+    environment:
+      LINKEDIN_WORKER_HOST: 0.0.0.0
+      LINKEDIN_WORKER_PORT: 8787
+      LINKEDIN_STORAGE_STATE_PATH: /run/secrets/linkedin-storage-state.json
+      LINKEDIN_USER_AGENT: ${LINKEDIN_USER_AGENT:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36}
+      LINKEDIN_WORKER_PAGE_TIMEOUT_MS: 30000
+      LINKEDIN_WORKER_RETRIES: 2
+      LINKEDIN_WORKER_CONCURRENCY: 1
+      LINKEDIN_WORKER_DEBUG: "false"
+      LINKEDIN_WORKER_DEBUG_ON_ERROR: "true"
+      LINKEDIN_DEBUG_ARTIFACTS_DIR: /app/debug-artifacts
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./debug-artifacts:/app/debug-artifacts
+      - ./.secrets/linkedin-storage-state.json:/run/secrets/linkedin-storage-state.json:ro

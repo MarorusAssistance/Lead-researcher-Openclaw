@@ -1,0 +1,26 @@
+{
+  "name": "linkedin-research",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin that proxies LinkedIn research requests to an external worker",
+  "type": "module",
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@linkedin-research/shared": "0.1.0",
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.24.6"
+  },
+  "devDependencies": {
+    "openclaw": "^2026.3.13"
+  }
+}

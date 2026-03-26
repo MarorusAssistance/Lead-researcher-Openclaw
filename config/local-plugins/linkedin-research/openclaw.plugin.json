@@ -1,0 +1,29 @@
+{
+  "id": "linkedin-research",
+  "kind": "provider",
+  "name": "LinkedIn Research",
+  "description": "Research LinkedIn profiles and company pages via an external worker.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "workerBaseUrl": {
+        "type": "string",
+        "minLength": 1
+      },
+      "requestTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "default": 30000
+      },
+      "debug": {
+        "type": "boolean",
+        "default": false
+      },
+      "workerApiKey": {
+        "type": "string"
+      }
+    },
+    "required": ["workerBaseUrl"]
+  }
+}

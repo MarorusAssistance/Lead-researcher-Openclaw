@@ -1,0 +1,12 @@
+{
+  "plugins": {
+    "entries": {
+      "notion-recruiter-crm": {
+        "enabled": true,
+        "config": {
+          "databaseId": "12345678-1234-1234-1234-1234567890ab"
+        }
+      }
+    }
+  }
+}

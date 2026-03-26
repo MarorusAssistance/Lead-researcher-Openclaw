@@ -1,0 +1,25 @@
+{
+  "steps": [
+    {
+      "tool": "linkedin_profile_fetch",
+      "input": {
+        "profileUrl": "https://www.linkedin.com/in/ana-lopez/"
+      }
+    },
+    {
+      "tool": "linkedin_entity_enrich",
+      "input": {
+        "rawEntity": "<output of linkedin_profile_fetch>"
+      }
+    },
+    {
+      "tool": "crm_upsert_contactable_entity",
+      "input": {
+        "entityType": "person",
+        "linkedinUrl": "https://www.linkedin.com/in/ana-lopez/",
+        "rawEntity": "<output of linkedin_profile_fetch>",
+        "fitAnalysis": "<output of linkedin_entity_enrich>"
+      }
+    }
+  ]
+}

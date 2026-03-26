@@ -1,0 +1,27 @@
+{
+  "name": "notion-crm-writer",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin that maps LinkedIn research entities into a Notion CRM",
+  "type": "module",
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@linkedin-research/shared": "0.1.0",
+    "@notionhq/client": "^5.0.1",
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.24.6"
+  },
+  "devDependencies": {
+    "openclaw": "^2026.3.13"
+  }
+}

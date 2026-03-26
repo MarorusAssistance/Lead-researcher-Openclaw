@@ -1,0 +1,74 @@
+{
+  "id": "notion-crm-writer",
+  "name": "Notion CRM Writer",
+  "description": "Upsert LinkedIn research entities into a Notion CRM database",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "notionVersion": {
+        "type": "string",
+        "minLength": 1
+      },
+      "databaseId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "dataSourceId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "propertyMap": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "optionalFields": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "typeValues": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "person": {
+            "type": "string",
+            "minLength": 1
+          },
+          "company": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "person",
+          "company"
+        ]
+      },
+      "defaultStatusValue": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "notionVersion",
+      "propertyMap",
+      "optionalFields",
+      "typeValues"
+    ],
+    "anyOf": [
+      {
+        "required": [
+          "databaseId"
+        ]
+      },
+      {
+        "required": [
+          "dataSourceId"
+        ]
+      }
+    ]
+  }
+}

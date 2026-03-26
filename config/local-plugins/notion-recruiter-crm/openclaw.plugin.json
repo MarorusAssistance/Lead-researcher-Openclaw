@@ -1,0 +1,17 @@
+{
+  "id": "notion-recruiter-crm",
+  "name": "Notion Recruiter CRM",
+  "description": "CRUD y seguimiento de recruiters en Notion",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "databaseId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "databaseId"
+    ]
+  }
+}
