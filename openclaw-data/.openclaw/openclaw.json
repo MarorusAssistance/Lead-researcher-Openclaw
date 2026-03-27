@@ -1,0 +1,389 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.3.13",
+    "lastTouchedAt": "2026-03-21T17:57:25.685Z"
+  },
+  "wizard": {
+    "lastRunAt": "2026-03-20T15:20:06.357Z",
+    "lastRunVersion": "2026.2.17",
+    "lastRunCommand": "onboard",
+    "lastRunMode": "local"
+  },
+  "session": {
+    "mainKey": "main",
+    "dmScope": "main",
+    "resetByType": {
+      "direct": {
+        "mode": "idle",
+        "idleMinutes": 90
+      }
+    },
+    "agentToAgent": {
+      "maxPingPongTurns": 0
+    }
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "lmstudio": {
+        "baseUrl": "http://100.93.82.63:1234/v1",
+        "apiKey": "doomy",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "qwen/qwen3-30b-a3b-2507",
+            "name": "qwen/qwen3-30b-a3b-2507",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 62000,
+            "maxTokens": 12000
+          }
+        ]
+      },
+      "openai": {
+        "apiKey": "${OPENAI_API_KEY}",
+        "baseUrl": "https://api.openai.com/v1",
+        "api": "openai-responses",
+        "models": [
+          {
+            "id": "openai/gpt-4o-mini",
+            "name": "gpt-4o-mini",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 128000,
+            "maxTokens": 16000
+          },
+          {
+            "id": "openai/gpt-4.1-mini",
+            "name": "gpt-4.1-mini",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 128000,
+            "maxTokens": 16000
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "lmstudio/qwen/qwen3-30b-a3b-2507"
+      },
+      "models": {
+        "lmstudio/qwen/qwen3-30b-a3b-2507": {
+          "alias": "qwen_instruct"
+        },
+        "openai/gpt-4o-mini": {
+          "alias": "gpt4omini"
+        }
+      },
+      "workspace": "/project/config/agents/workspace",
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "contextPruning": {
+        "mode": "cache-ttl",
+        "ttl": "5m",
+        "keepLastAssistants": 2,
+        "softTrimRatio": 0.25,
+        "hardClearRatio": 0.45,
+        "minPrunableToolChars": 12000,
+        "softTrim": {
+          "maxChars": 2500,
+          "headChars": 900,
+          "tailChars": 900
+        },
+        "hardClear": {
+          "enabled": true,
+          "placeholder": "[Old tool result content cleared]"
+        }
+      },
+      "maxConcurrent": 3
+    },
+    "list": [
+      {
+        "id": "main",
+        "workspace": "/project/config/agents/workspace",
+        "tools": {
+          "allow": [
+            "sessions_send",
+            "session_status",
+            "sessions_history"
+          ],
+          "deny": [
+            "sessions_list",
+            "sessions_spawn",
+            "web_search",
+            "linkedin_profile_fetch",
+            "linkedin_company_fetch",
+            "notion_recruiter_upsert",
+            "notion_recruiter_get",
+            "notion_recruiter_query_due_followups",
+            "notion_recruiter_save_research",
+            "notion_recruiter_save_drafts",
+            "notion_recruiter_log_touchpoint",
+            "notion_recruiter_mark_status",
+            "notion_recruiter_schedule_next_action",
+            "notion_recruiter_attach_cv",
+            "prospecting_state_get",
+            "prospecting_state_update"
+          ],
+          "loopDetection": {
+            "enabled": true,
+            "historySize": 12,
+            "warningThreshold": 2,
+            "criticalThreshold": 3,
+            "globalCircuitBreakerThreshold": 4,
+            "detectors": {
+              "genericRepeat": true,
+              "knownPollNoProgress": true,
+              "pingPong": true
+            }
+          }
+        }
+      },
+      {
+        "id": "research",
+        "workspace": "/project/config/agents/workspace-research",
+        "tools": {
+          "allow": [
+            "sessions_send",
+            "web_search",
+            "web_fetch"
+          ],
+          "deny": [
+            "linkedin_profile_fetch",
+            "linkedin_company_fetch",
+            "session_status",
+            "sessions_list",
+            "sessions_history",
+            "notion_recruiter_upsert",
+            "notion_recruiter_get",
+            "notion_recruiter_query_due_followups",
+            "notion_recruiter_save_research",
+            "notion_recruiter_save_drafts",
+            "notion_recruiter_log_touchpoint",
+            "notion_recruiter_mark_status",
+            "notion_recruiter_schedule_next_action",
+            "notion_recruiter_attach_cv",
+            "prospecting_state_get",
+            "prospecting_state_update",
+            "exec",
+            "process",
+            "read",
+            "write",
+            "edit",
+            "apply_patch",
+            "browser",
+            "subagents",
+            "sessions_spawn"
+          ],
+          "loopDetection": {
+            "enabled": true,
+            "historySize": 20,
+            "warningThreshold": 6,
+            "criticalThreshold": 10,
+            "globalCircuitBreakerThreshold": 14,
+            "detectors": {
+              "genericRepeat": true,
+              "knownPollNoProgress": true,
+              "pingPong": true
+            }
+          }
+        }
+      },
+      {
+        "id": "crm",
+        "workspace": "/project/config/agents/workspace-crm",
+        "tools": {
+          "allow": [
+            "session_status",
+            "notion_recruiter_upsert",
+            "notion_recruiter_get",
+            "notion_recruiter_query_due_followups",
+            "notion_recruiter_save_research",
+            "notion_recruiter_save_drafts",
+            "notion_recruiter_log_touchpoint",
+            "notion_recruiter_mark_status",
+            "notion_recruiter_schedule_next_action",
+            "notion_recruiter_attach_cv",
+            "prospecting_state_get",
+            "prospecting_state_update"
+          ],
+          "deny": [
+            "linkedin_profile_fetch",
+            "linkedin_company_fetch",
+            "web_search",
+            "sessions_list",
+            "sessions_history",
+            "sessions_send",
+            "sessions_spawn",
+            "exec",
+            "process",
+            "read",
+            "write",
+            "edit",
+            "apply_patch",
+            "browser",
+            "subagents"
+          ],
+          "loopDetection": {
+            "enabled": true,
+            "historySize": 12,
+            "warningThreshold": 2,
+            "criticalThreshold": 3,
+            "globalCircuitBreakerThreshold": 4,
+            "detectors": {
+              "genericRepeat": true,
+              "knownPollNoProgress": true,
+              "pingPong": true
+            }
+          }
+        }
+      }
+    ]
+  },
+  "tools": {
+    "agentToAgent": {
+      "enabled": true,
+      "allow": [
+        "main",
+        "research",
+        "crm"
+      ]
+    },
+    "sessions": {
+      "visibility": "all"
+    },
+    "web": {
+      "search": {
+        "enabled": true,
+        "provider": "brave",
+        "maxResults": 10,
+        "timeoutSeconds": 45,
+        "cacheTtlMinutes": 2,
+        "brave": {
+          "mode": "web"
+        }
+      },
+      "fetch": {
+        "enabled": true,
+        "timeoutSeconds": 30,
+        "cacheTtlMinutes": 3
+      }
+    },
+    "loopDetection": {
+      "enabled": true,
+      "historySize": 20,
+      "warningThreshold": 6,
+      "criticalThreshold": 10,
+      "globalCircuitBreakerThreshold": 14,
+      "detectors": {
+        "genericRepeat": true,
+        "knownPollNoProgress": true,
+        "pingPong": true
+      }
+    }
+  },
+  "messages": {
+    "ackReactionScope": "group-mentions"
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "dmPolicy": "pairing",
+      "botToken": "${TELEGRAM_BOT_TOKEN}",
+      "groupPolicy": "allowlist",
+      "streaming": "partial"
+    }
+  },
+  "gateway": {
+    "bind": "lan",
+    "controlUi": {
+      "allowedOrigins": [
+        "http://localhost:18789",
+        "http://127.0.0.1:18789"
+      ],
+      "dangerouslyDisableDeviceAuth": true
+    },
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    },
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "nodes": {
+      "denyCommands": [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "calendar.add",
+        "contacts.add",
+        "reminders.add"
+      ]
+    }
+  },
+  "plugins": {
+    "enabled": true,
+    "allow": [
+      "notion-recruiter-crm",
+      "linkedin-research",
+      "telegram"
+    ],
+    "load": {
+      "paths": [
+        "/project/config/local-plugins/notion-recruiter-crm",
+        "/project/config/local-plugins/linkedin-research"
+      ]
+    },
+    "entries": {
+      "notion-recruiter-crm": {
+        "enabled": true,
+        "config": {
+          "databaseId": "${NOTION_DATABASE_ID}"
+        }
+      },
+      "linkedin-research": {
+        "enabled": true,
+        "config": {
+          "workerBaseUrl": "http://linkedin-research-worker:3000",
+          "requestTimeoutMs": 120000,
+          "debug": false
+        }
+      }
+    }
+  }
+}

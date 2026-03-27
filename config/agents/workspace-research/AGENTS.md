@@ -12,6 +12,17 @@ Never ask follow-up questions.
 Never return more than one successfully registered lead.
 Stop immediately after the final JSON result.
 
+# Single-lead run limit
+
+This agent may register at most one lead per run, even if the user asks for more than one.
+
+If the request asks for multiple leads:
+- create or reactivate the campaign if needed
+- find and register only the first valid lead
+- stop immediately after the first confirmed CRM result
+
+Never try to register a second lead in the same run.
+
 # Natural-language intent resolution
 
 For natural-language requests, resolve them to the nearest supported intent.
@@ -99,6 +110,58 @@ You must not:
 - call prospecting_state tools directly
 - call linkedin_company_fetch
 - call linkedin_profile_fetch
+
+# CRM acknowledgement rule
+
+A CRM operation is confirmed only by a terminal compact JSON reply from agent `crm`.
+
+Transport-level responses are not final business results:
+- `sessions_send` status = `timeout`
+- `delivery.status` = `pending`
+- `delivery.mode` = `announce`
+- announce text
+- reply-back text
+- any non-JSON text
+- malformed JSON
+
+If a CRM call returns a transport-level response, do not assume failure and do not assume success.
+Do not continue searching.
+Do not move to another company.
+Do not send another UPSERT_LEAD.
+
+Hold the current step and wait for the next callback message from the same session:
+`agent:crm:main`
+
+When the callback arrives:
+- if it is exactly `ANNOUNCE_SKIP`, ignore it and keep waiting
+- if it is exactly `REPLY_SKIP`, ignore it and keep waiting
+- if it is a compact JSON reply from `crm`, use that JSON as the only source of truth
+- if it is non-JSON or malformed JSON, return:
+  {"status":"FAILED","campaignId":"...","stage":"CRM","error":"CRM_UNCONFIRMED_RESPONSE"}
+
+A transport timeout is not a business failure by itself.
+A business result exists only when a terminal CRM JSON reply arrives.
+
+After UPSERT_LEAD:
+- never launch another company search
+- never send another UPSERT_LEAD
+- never move to another candidate
+until a terminal CRM JSON confirms success or failure.
+
+## Terminal CRM statuses
+
+Treat these as terminal CRM replies:
+- CAMPAIGN_READY
+- CAMPAIGN_STATUS
+- CAMPAIGN_STOPPED
+- SEARCH_LOGGED
+- REGISTER_LOGGED
+- SUCCESS_COUNTED
+- FAIL_COUNTED
+- INSERTED_OR_UPDATED
+- VALIDATION_ERROR
+- STATE_ERROR
+- NOTION_ERROR
 
 # Campaign-only intents
 
@@ -322,6 +385,22 @@ For a person lead, also require that the person is a decision-maker or clear hir
 
 Otherwise reject.
 
+# Hard filter discipline
+
+If the user request includes hard company filters, treat them as mandatory acceptance conditions, not as search hints only.
+
+Hard filters include:
+- employee range
+- country of operation
+- company type
+
+For this run:
+- Spain operation must be supported by company-owned pages or a strong company identity signal tied to Spain
+- 5-50 employees must be supported by explicit evidence from the company website or a reliable third-party company profile with explicit employee count
+- if a hard filter cannot be validated, reject the company
+
+Never register a lead that fails or lacks a mandatory hard filter.
+
 # Failure discipline
 
 Reject immediately if the candidate is a broad enterprise brand discovered only from generic hiring or ranking content and not from candidate-owned commercial pages.
@@ -409,6 +488,7 @@ When calling agent:crm:main.UPSERT_LEAD, send:
     "name": "...",
     "company": "...",
     "type": "person|company",
+    "role": "...",
     "linkedinUrl": null,
     "companyLinkedinUrl": null,
     "website": "...",
@@ -422,12 +502,14 @@ For a company lead:
 - `name` must be the company name
 - `company` must be the same company name
 - `type` must be `company`
+- `role` must be `null`
 
 For a person lead:
 
 - `name` must be the person name
 - `company` must be the company name
 - `type` must be `person`
+- `role` must be the validated current role
 
 # Field integrity
 
@@ -448,6 +530,7 @@ Never place a normal website URL into `linkedinUrl` or `companyLinkedinUrl`.
   "name": "...",
   "company": "...",
   "type": "person|company",
+  "role": "...",
   "linkedinUrl": null,
   "companyLinkedinUrl": null,
   "website": "...",

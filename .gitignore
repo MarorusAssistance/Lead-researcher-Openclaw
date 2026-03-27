@@ -31,6 +31,14 @@ openclaw-data/
 linkedin-research-worker-debug/
 linkedin-research-worker-state/
 
+# Runtime local
+openclaw-data/**
+
+# Pero sí quiero versionar este config concreto
+!openclaw-data/
+!openclaw-data/.openclaw/
+!openclaw-data/.openclaw/openclaw.json
+
 # =========================
 # Generic deps / build outputs
 # =========================
@@ -102,4 +110,3 @@ config/**/.gitmodules
 # Remove this line if your repo root really uses npm
 # =========================
 package-lock.json
-docker-compose.yml

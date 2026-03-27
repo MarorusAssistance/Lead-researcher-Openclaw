@@ -1,40 +1,42 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-trap 'echo "Recibiendo señal de terminación..."; exit 0' SIGTERM SIGINT
+trap 'echo "Stopping OpenClaw..."; exit 0' SIGTERM SIGINT
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+STATE_DIR="${OPENCLAW_STATE_DIR:-/home/openclaw/.openclaw}"
+TOKEN_FILE="${STATE_DIR}/.gateway_token"
 
-echo -e "${GREEN}🚀 Iniciando OpenClaw en Docker...${NC}"
+echo "Starting OpenClaw..."
 
-if ! command -v openclaw &> /dev/null; then
-    echo -e "${RED}❌ OpenClaw no está instalado${NC}"
+if ! command -v openclaw >/dev/null 2>&1; then
+    echo "OpenClaw CLI is not installed"
     exit 1
 fi
 
-echo -e "${GREEN}✓ OpenClaw CLI encontrado${NC}"
+mkdir -p "${STATE_DIR}"
+mkdir -p "${STATE_DIR}/plugin-state/notion-recruiter-crm"
+mkdir -p "${STATE_DIR}/workspace"
+mkdir -p "${STATE_DIR}/workspace-research"
+mkdir -p "${STATE_DIR}/workspace-crm"
 
-TOKEN_FILE="$OPENCLAW_HOME/.gateway_token"
-
-mkdir -p "$OPENCLAW_HOME"
-
-if [ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
-    echo -e "${GREEN}🔐 Usando OPENCLAW_GATEWAY_TOKEN del entorno${NC}"
-    printf '%s' "$OPENCLAW_GATEWAY_TOKEN" > "$TOKEN_FILE"
-    chmod 600 "$TOKEN_FILE"
-elif [ -f "$TOKEN_FILE" ] && [ -s "$TOKEN_FILE" ]; then
-    echo -e "${GREEN}🔐 Usando token persistido en .gateway_token${NC}"
-    export OPENCLAW_GATEWAY_TOKEN="$(cat "$TOKEN_FILE")"
-else
-    echo -e "${YELLOW}🔑 Generando token de gateway por primera vez...${NC}"
-    export OPENCLAW_GATEWAY_TOKEN="$(openssl rand -hex 32)"
-    printf '%s' "$OPENCLAW_GATEWAY_TOKEN" > "$TOKEN_FILE"
-    chmod 600 "$TOKEN_FILE"
-    echo -e "${GREEN}✓ Token generado y guardado en .gateway_token${NC}"
+if [ ! -d /project/config/local-plugins/notion-recruiter-crm ] || [ ! -d /project/config/local-plugins/linkedin-research ]; then
+    echo "Bundled project plugins are missing under /project/config/local-plugins"
+    exit 1
 fi
 
-echo -e "${GREEN}🚀 Ejecutando: $@${NC}"
+if [ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+    printf '%s' "${OPENCLAW_GATEWAY_TOKEN}" > "${TOKEN_FILE}"
+    chmod 600 "${TOKEN_FILE}"
+elif [ -f "${TOKEN_FILE}" ] && [ -s "${TOKEN_FILE}" ]; then
+    export OPENCLAW_GATEWAY_TOKEN="$(cat "${TOKEN_FILE}")"
+else
+    export OPENCLAW_GATEWAY_TOKEN="$(openssl rand -hex 32)"
+    printf '%s' "${OPENCLAW_GATEWAY_TOKEN}" > "${TOKEN_FILE}"
+    chmod 600 "${TOKEN_FILE}"
+fi
+
+echo "Gateway port: ${OPENCLAW_GATEWAY_PORT:-18789}"
+echo "Workspace: /project/config/agents/workspace"
+echo "Project root: /project"
+
 exec "$@"

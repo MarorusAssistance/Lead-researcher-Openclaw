@@ -1,0 +1,87 @@
+services:
+  openclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openclaw-gateway
+    restart: unless-stopped
+    working_dir: /project
+    ports:
+      - "${OPENCLAW_EXPOSE_IP:-127.0.0.1}:${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+    volumes:
+      - ./openclaw-data/.openclaw:/home/openclaw/.openclaw
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=2048}
+      BRAVE_API_KEY: ${BRAVE_API_KEY}
+      NOTION_API_KEY: ${NOTION_API_KEY}
+      NOTION_DATABASE_ID: ${NOTION_DATABASE_ID}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENCLAW_GATEWAY_BIND: lan
+      OPENCLAW_GATEWAY_PORT: ${OPENCLAW_GATEWAY_PORT:-18789}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      OPENCLAW_DISABLE_PLUGIN_DISCOVERY_CACHE: "1"
+      OPENCLAW_DISABLE_PLUGIN_MANIFEST_CACHE: "1"
+      OPENCLAW_LOG_LEVEL: ${OPENCLAW_LOG_LEVEL:-info}
+      OPENCLAW_SANDBOX_MODE: ${OPENCLAW_SANDBOX_MODE:-non-main}
+      OPENCLAW_STATE_DIR: /home/openclaw/.openclaw
+      PROSPECTING_STATE_PATH: /home/openclaw/.openclaw/plugin-state/notion-recruiter-crm/prospecting-state.json
+      NOTION_RECRUITER_CRM_DATA_DIR: /home/openclaw/.openclaw/plugin-state/notion-recruiter-crm
+      PNPM_HOME: /home/openclaw/.local/share/pnpm
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+    networks:
+      - openclaw-network
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2"
+          pids: 100
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  linkedin-research-worker:
+    build:
+      context: ./openclaw-data/.openclaw/linkedin-research-worker
+      dockerfile: Dockerfile
+    container_name: linkedin-research-worker
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      HEADLESS: true
+      NAV_TIMEOUT_MS: 30000
+      LINKEDIN_STORAGE_STATE_PATH: /app/state/linkedin-storage-state.json
+      DEBUG_ARTIFACTS_DIR: /app/debug
+    volumes:
+      - ./linkedin-research-worker-state:/app/state
+      - ./linkedin-research-worker-debug:/app/debug
+    networks:
+      - openclaw-network
+    shm_size: 1gb
+    init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  openclaw-network:
+    driver: bridge

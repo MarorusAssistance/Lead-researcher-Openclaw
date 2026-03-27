@@ -19,7 +19,7 @@ export interface ProspectingStateFile {
 
 const DATA_DIR =
   process.env.NOTION_RECRUITER_CRM_DATA_DIR ||
-  "/home/openclaw/.openclaw/.openclaw/plugin-state/notion-recruiter-crm";
+  "/home/openclaw/.openclaw/plugin-state/notion-recruiter-crm";
 
 const STATE_PATH =
   process.env.PROSPECTING_STATE_PATH ||

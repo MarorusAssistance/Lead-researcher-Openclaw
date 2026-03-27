@@ -1,0 +1,9 @@
+.git
+.gitignore
+.env
+openclaw-data
+linkedin-research-worker-debug
+linkedin-research-worker-state
+*.log
+/node_modules
+/package-lock.json

@@ -1,92 +1,55 @@
 FROM node:22-bookworm-slim
 
-# Metadata
 LABEL maintainer="OpenClaw Docker Setup"
-LABEL description="OpenClaw AI Assistant containerizado"
-LABEL version="1.0"
+LABEL description="OpenClaw gateway container for Lead-researcher-Openclaw"
+LABEL version="1.1"
 
-# Variables de entorno
 ENV NODE_ENV=production \
-    OPENCLAW_HOME=/home/openclaw/.openclaw \
+    HOME=/home/openclaw \
+    OPENCLAW_STATE_DIR=/home/openclaw/.openclaw \
     OPENCLAW_GATEWAY_PORT=18789 \
     PNPM_HOME=/home/openclaw/.local/share/pnpm \
-    HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew \
-    HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar \
-    HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew \
-    PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/openclaw/.local/share/pnpm:$PATH"
+    PATH="/home/openclaw/.local/share/pnpm:$PATH"
 
-# Instalar dependencias del sistema y Homebrew
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
-    python3 \
-    python3-pip \
-    build-essential \
+    ca-certificates \
+    curl \
+    file \
+    git \
     openssl \
     procps \
-    file \
-    sudo \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Instalar pnpm globalmente
-RUN npm install -g pnpm@latest
-
-# Crear usuario no-root primero (antes de instalar Homebrew)
 RUN groupadd -r openclaw && useradd -r -g openclaw -m -d /home/openclaw -s /bin/bash openclaw
 
-# Preparar directorios de Homebrew con permisos correctos
-RUN mkdir -p /home/linuxbrew/.linuxbrew \
-    && chown -R openclaw:openclaw /home/linuxbrew
+RUN npm install -g pnpm@latest openclaw@2026.3.13 \
+    && npm cache clean --force
 
-# Instalar Homebrew como usuario no-root (Corrección del error)
-USER openclaw
-WORKDIR /home/openclaw
-RUN git clone --depth=1 --single-branch https://github.com/Homebrew/brew /home/linuxbrew/.linuxbrew/Homebrew \
-    && mkdir -p /home/linuxbrew/.linuxbrew/bin \
-    && ln -s /home/linuxbrew/.linuxbrew/Homebrew/bin/brew /home/linuxbrew/.linuxbrew/bin/brew \
-    && /home/linuxbrew/.linuxbrew/bin/brew update --force --quiet
-
-# Volver a root para preparar directorios de sistema
-USER root
-
-# Crear directorio de datos persistentes
-RUN mkdir -p ${OPENCLAW_HOME} \
-    && mkdir -p ${OPENCLAW_HOME}/workspace \
-    && mkdir -p ${OPENCLAW_HOME}/agents \
-    && mkdir -p ${OPENCLAW_HOME}/credentials \
-    && chown -R openclaw:openclaw ${OPENCLAW_HOME}
-
-# Crear directorios para pnpm store (se montarán con tmpfs escribible)
-RUN mkdir -p /home/openclaw/.local/share/pnpm \
-    && mkdir -p /home/openclaw/.local/bin \
+RUN mkdir -p ${OPENCLAW_STATE_DIR} \
+    && mkdir -p ${OPENCLAW_STATE_DIR}/agents \
+    && mkdir -p ${OPENCLAW_STATE_DIR}/credentials \
+    && mkdir -p ${OPENCLAW_STATE_DIR}/local-plugins \
+    && mkdir -p ${OPENCLAW_STATE_DIR}/plugin-state \
+    && mkdir -p ${OPENCLAW_STATE_DIR}/workspace \
     && mkdir -p /home/openclaw/.cache \
+    && mkdir -p /home/openclaw/.local/share/pnpm \
     && chown -R openclaw:openclaw /home/openclaw
 
-# Instalar OpenClaw globalmente
-RUN npm i -g openclaw@latest
+WORKDIR /home/openclaw
 
-# Crear directorio de trabajo
-WORKDIR /app
+COPY --chown=openclaw:openclaw entrypoint.sh /usr/local/bin/openclaw-entrypoint
+COPY --chown=openclaw:openclaw . /project
+RUN chmod +x /usr/local/bin/openclaw-entrypoint
+RUN chown -R openclaw:openclaw /project
 
-# Copiar script de entrada
-COPY --chown=openclaw:openclaw entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
-
-# Cambiar definitivamente al usuario no-root
 USER openclaw
 
-# Exponer puertos
-EXPOSE ${OPENCLAW_GATEWAY_PORT}
+EXPOSE 18789
 
-# Volumen para persistencia
-VOLUME ["${OPENCLAW_HOME}"]
-
-# Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD openclaw health || exit 1
+    CMD curl -fsS "http://127.0.0.1:${OPENCLAW_GATEWAY_PORT}/healthz" || exit 1
 
-# Punto de entrada
-ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["openclaw", "gateway", "--verbose", "--allow-unconfigured"]
+ENTRYPOINT ["/usr/local/bin/openclaw-entrypoint"]
+CMD ["openclaw", "gateway", "--verbose", "--allow-unconfigured", "--bind", "lan"]
