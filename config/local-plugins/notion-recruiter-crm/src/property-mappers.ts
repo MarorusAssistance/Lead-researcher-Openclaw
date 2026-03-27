@@ -576,6 +576,9 @@ export function normalizeRecruiterPage(
     fitSummary: readRichText(page, getPropertyName(schema, "fitSummary")),
     connectionNoteDraft: readRichText(page, getPropertyName(schema, "connectionNoteDraft")),
     dmDraft: readRichText(page, getPropertyName(schema, "dmDraft")),
+    emailSubjectDraft: readRichText(page, getPropertyName(schema, "emailSubjectDraft")),
+    emailBodyDraft: readRichText(page, getPropertyName(schema, "emailBodyDraft")),
+    mailDraft: readRichText(page, getPropertyName(schema, "mailDraft")),
     followup1Draft: readRichText(page, getPropertyName(schema, "followup1Draft")),
     followup2Draft: readRichText(page, getPropertyName(schema, "followup2Draft")),
     lastReplySummary: readRichText(page, getPropertyName(schema, "lastReplySummary")),
@@ -585,6 +588,8 @@ export function normalizeRecruiterPage(
     nextActionType: readSelectOrStatus(page, getPropertyName(schema, "nextActionType")),
     cvSent: readCheckbox(page, getPropertyName(schema, "cvSent")),
     cvUrl: readUrl(page, getPropertyName(schema, "cvUrl")),
+    cvUrlEn: readUrl(page, getPropertyName(schema, "cvUrlEn")),
+    cvUrlEs: readUrl(page, getPropertyName(schema, "cvUrlEs")),
   };
 }
 

@@ -4,7 +4,7 @@ Plugin nativo de OpenClaw para usar una base de datos de Notion como CRM de recr
 
 ## Que hace
 
-- Crea o actualiza recruiters usando el LinkedIn URL como clave natural.
+- Crea o actualiza recruiters usando el LinkedIn URL como clave natural cuando existe; si no llega, crea igualmente el lead.
 - Lee fichas normalizadas desde Notion.
 - Guarda research, hooks y drafts de outreach.
 - Registra touchpoints y mantiene un historial simple en `Interaction Log`.
@@ -109,10 +109,10 @@ Los cambios en plugins o en `openclaw.json` requieren reiniciar el gateway para 
 
 ## Propiedades esperadas en Notion
 
-La data source debe tener exactamente estas propiedades con estos tipos:
+La data source debe tener estas propiedades con estos tipos:
 
 - `Name` (`title`)
-- `LinkedIn URL` (`url`)
+- `LinkedIn URL` (`url`, opcional)
 - `Company` (`rich_text`)
 - `Role` (`rich_text`)
 - `Type` (`select`)
@@ -125,23 +125,30 @@ La data source debe tener exactamente estas propiedades con estos tipos:
 - `Fit Summary` (`rich_text`)
 - `Connection Note Draft` (`rich_text`)
 - `DM Draft` (`rich_text`)
-- `Followup 1 Draft` (`rich_text`)
-- `Followup 2 Draft` (`rich_text`)
+- `Email Subject Draft` (`rich_text`)
+- `Email Body Draft` (`rich_text`)
+- `Mail Draft` (`rich_text`)
+- `Follow Up 1 Draft` (`rich_text`)
+- `Follow Up 2 Draft` (`rich_text`)
 - `Last Reply Summary` (`rich_text`)
 - `Interaction Log` (`rich_text`)
 - `Last Touch At` (`date`)
 - `Next Action At` (`date`)
 - `Next Action Type` (`select`)
 - `CV Sent` (`checkbox`)
-- `CV URL` (`url`)
+- `CV URL` (`url`, opcional legacy)
+- `CV URL EN` (`url`)
+- `CV URL ES` (`url`)
 
-Si falta una propiedad, si el tipo no coincide, o si la base no esta compartida con la integracion, el plugin devuelve un error claro con el detalle.
+El plugin tambien tolera el alias legacy `Followup 1 Draft` y `Followup 2 Draft`. Si falta una propiedad necesaria para el payload que intentas guardar, si el tipo no coincide, o si la base no esta compartida con la integracion, devuelve un error claro con el detalle.
 
 ## Notas de modelado
 
 - `Type` espera valores `in_house` o `agency`.
-- `Status` y `Next Action Type` son selects libres: usa las opciones que encajen con tu flujo.
-- El plugin normaliza el LinkedIn URL antes de buscar, crear y actualizar.
+- En el flujo actual de CRM, `Status` se normaliza a `To Contact` por defecto.
+- En el flujo actual de CRM, `Next Action Type` se normaliza a `connection_request` por defecto.
+- El plugin normaliza el LinkedIn URL antes de buscar, crear y actualizar cuando se proporciona.
+- `CV URL EN` y `CV URL ES` pueden rellenarse automaticamente con los enlaces por defecto del perfil.
 - `Interaction Log` se mantiene como texto acumulado simple.
 
 ## Ejemplos de uso de tools
@@ -151,13 +158,12 @@ Si falta una propiedad, si el tipo no coincide, o si la base no esta compartida 
 ```json
 {
   "name": "Ana Lopez",
-  "linkedinUrl": "https://www.linkedin.com/in/ana-lopez/",
   "company": "Contoso",
   "role": "Senior Recruiter",
   "recruiterType": "in_house",
-  "region": "EMEA",
+  "region": "Spain",
   "fitScore": 8.5,
-  "status": "new"
+  "sourceNotes": "Leads hiring for data and AI roles in Madrid."
 }
 ```
 
@@ -208,6 +214,9 @@ Por page ID:
   "linkedinUrl": "https://www.linkedin.com/in/ana-lopez/",
   "connectionNoteDraft": "Hi Ana, loved your recent post on AI hiring.",
   "dmDraft": "Thanks for connecting. Sharing a concise intro and profile.",
+  "emailSubjectDraft": "AI recruiter candidate for your Madrid searches",
+  "emailBodyDraft": "Hi Ana, sharing a concise summary of fit and profile.",
+  "mailDraft": "Hi Ana, attaching a short intro and CV links.",
   "followup1Draft": "Bumping this in case it got buried.",
   "followup2Draft": "Happy to resend the profile if useful."
 }

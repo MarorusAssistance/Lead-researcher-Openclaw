@@ -114,30 +114,59 @@ Required lead fields inside "lead":
 - name
 - company
 - type
+- role
+- region
+- fitScore
+- sourceNotes
 
 Allowed lead.type values:
-- person
-- company
+- agency
+- in_house
 
 Optional lead fields:
-- role
 - linkedinUrl
+- recruiterType
+- status
+- hook1
+- hook2
+- connectionNoteDraft
+- dmDraft
+- emailSubjectDraft
+- emailBodyDraft
+- mailDraft
+- lastReplySummary
+- lastTouchAt
+- nextActionAt
+- nextActionType
+- cvSent
+- cvUrl
+- cvUrlEn
+- cvUrlEs
+- followup1Draft
+- followup2Draft
+- fitSummary
+
+Ignore and never forward legacy or unsupported lead fields:
 - companyLinkedinUrl
 - website
 - reasoning
-- recruiterType
-- status
+- type
 
 Normalize before calling Notion:
 - convert lead.type -> recruiterType only if recruiterType is missing
 - never send type to notion_recruiter_upsert
-- if status is missing, default to "To Contact"
+- linkedinUrl is optional; if it is missing, null, or blank, do not invent it and still proceed with the insert
+- if status is missing or invalid, default to "To Contact"
+- always set nextActionType to "connection_request" unless an explicit valid value is already provided
+- if cvSent is missing, default to false
+- if cvUrlEn is missing, default to "https://drive.google.com/file/d/1Bkr_O7egJ4lJ_-rhJlMrSt3aTcrG3oU3/view?usp=sharing"
+- if cvUrlEs is missing, default to "https://drive.google.com/file/d/1boKFfBigABiFCJ2RirVB4J2nRybpGbLg/view?usp=sharing"
+- if hook1, hook2, connectionNoteDraft, dmDraft, emailSubjectDraft, emailBodyDraft, mailDraft, lastReplySummary, followup1Draft, followup2Draft are missing, omit them instead of inventing copy
+- if lastTouchAt or nextActionAt are missing, omit them so they remain empty/null in Notion
+- prefer a short fitSummary when the input clearly supports it; otherwise omit it
 
-Allowed statuses are exactly:
+Allowed statuses for new inserts:
 - To Contact
-- Conected
-- In Porgress
-- CV Sent
 
 Map any unknown status to "To Contact".
 

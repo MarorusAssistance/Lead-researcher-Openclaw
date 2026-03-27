@@ -41,6 +41,14 @@ type ToolResult = {
   details: Record<string, unknown>;
 };
 
+const DEFAULT_STATUS = "To Contact";
+const DEFAULT_NEXT_ACTION_TYPE = "connection_request";
+const DEFAULT_CV_SENT = false;
+const DEFAULT_CV_URL_EN =
+  "https://drive.google.com/file/d/1Bkr_O7egJ4lJ_-rhJlMrSt3aTcrG3oU3/view?usp=sharing";
+const DEFAULT_CV_URL_ES =
+  "https://drive.google.com/file/d/1boKFfBigABiFCJ2RirVB4J2nRybpGbLg/view?usp=sharing";
+
 function parsePluginConfig(pluginConfig: unknown): PluginConfig {
   if (Value.Check(PluginConfigSchema, pluginConfig)) {
     return pluginConfig;
@@ -112,6 +120,14 @@ function normalizeLinkedInUrlOrThrow(value: string): string {
   }
 }
 
+function isNonBlankString(value: string | null | undefined): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeOptionalLinkedInUrl(value: string | null | undefined): string | undefined {
+  return isNonBlankString(value) ? normalizeLinkedInUrlOrThrow(value) : undefined;
+}
+
 function normalizeHttpUrlOrThrow(value: string, label: string): string {
   try {
     return normalizeHttpUrl(value, label);
@@ -137,6 +153,21 @@ function requireIsoDateTime(value: string, label: string): string {
   }
 
   return parsed.toISOString();
+}
+
+function normalizeOptionalIsoDateTime(
+  value: string | null | undefined,
+  label: string,
+): string | null | undefined {
+  if (value === null) {
+    return null;
+  }
+
+  if (!isNonBlankString(value)) {
+    return undefined;
+  }
+
+  return requireIsoDateTime(value, label);
 }
 
 function summarizeRecruiter(record: RecruiterRecord): string {
@@ -350,41 +381,62 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
     name: "notion_recruiter_upsert",
     label: "Notion Recruiter Upsert",
     description:
-      "Create or update a recruiter page in the configured Notion CRM using the LinkedIn URL as the unique key.",
+      "Create or update a recruiter page in the configured Notion CRM using LinkedIn URL as the unique key when present.",
     parameters: UpsertRecruiterSchema,
     async execute(_toolCallId, rawParams) {
       return executeTool(async () => {
         const params = rawParams as UpsertRecruiterInput;
-        const linkedinUrl = normalizeLinkedInUrlOrThrow(params.linkedinUrl);
-        const result = await client.upsertRecruiter({
+        api.logger.debug?.(
+          `[notion-recruiter-crm] notion_recruiter_upsert raw params ${JSON.stringify(rawParams)}`,
+        );
+        const normalizedInput = {
           name: params.name.trim(),
-          linkedinUrl,
+          linkedinUrl: normalizeOptionalLinkedInUrl(params.linkedinUrl),
           company: params.company,
           role: params.role,
           recruiterType: params.recruiterType,
           region: params.region,
           fitScore: params.fitScore,
-          status: params.status,
+          status: isNonBlankString(params.status) ? params.status.trim() : DEFAULT_STATUS,
           sourceNotes: params.sourceNotes,
           hook1: params.hook1,
           hook2: params.hook2,
           fitSummary: params.fitSummary,
           connectionNoteDraft: params.connectionNoteDraft,
           dmDraft: params.dmDraft,
+          emailSubjectDraft: params.emailSubjectDraft,
+          emailBodyDraft: params.emailBodyDraft,
+          mailDraft: params.mailDraft,
           followup1Draft: params.followup1Draft,
           followup2Draft: params.followup2Draft,
           lastReplySummary: params.lastReplySummary,
           interactionLog: params.interactionLog,
-          lastTouchAt: params.lastTouchAt
-            ? requireIsoDateTime(params.lastTouchAt, "lastTouchAt")
-            : undefined,
-          nextActionAt: params.nextActionAt
-            ? requireIsoDateTime(params.nextActionAt, "nextActionAt")
-            : undefined,
-          nextActionType: params.nextActionType,
-          cvSent: params.cvSent,
+          lastTouchAt: normalizeOptionalIsoDateTime(params.lastTouchAt, "lastTouchAt"),
+          nextActionAt: normalizeOptionalIsoDateTime(params.nextActionAt, "nextActionAt"),
+          nextActionType: isNonBlankString(params.nextActionType)
+            ? params.nextActionType.trim()
+            : DEFAULT_NEXT_ACTION_TYPE,
+          cvSent: params.cvSent ?? DEFAULT_CV_SENT,
           cvUrl: params.cvUrl ? normalizeHttpUrlOrThrow(params.cvUrl, "cvUrl") : undefined,
-        });
+          cvUrlEn:
+            params.cvUrlEn === null
+              ? null
+              : normalizeHttpUrlOrThrow(
+                  isNonBlankString(params.cvUrlEn) ? params.cvUrlEn : DEFAULT_CV_URL_EN,
+                  "cvUrlEn",
+                ),
+          cvUrlEs:
+            params.cvUrlEs === null
+              ? null
+              : normalizeHttpUrlOrThrow(
+                  isNonBlankString(params.cvUrlEs) ? params.cvUrlEs : DEFAULT_CV_URL_ES,
+                  "cvUrlEs",
+                ),
+        };
+        api.logger.debug?.(
+          `[notion-recruiter-crm] notion_recruiter_upsert normalized input ${JSON.stringify(normalizedInput)}`,
+        );
+        const result = await client.upsertRecruiter(normalizedInput);
 
         return createSuccessResult(
           `${result.action === "created" ? "Created" : "Updated"} recruiter ${summarizeRecruiter(result.recruiter)}.`,
@@ -516,7 +568,15 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
         const params = rawParams as SaveDraftsInput;
         ensureAtLeastOneProvidedField(
           params as Record<string, unknown>,
-          ["connectionNoteDraft", "dmDraft", "followup1Draft", "followup2Draft"],
+          [
+            "connectionNoteDraft",
+            "dmDraft",
+            "emailSubjectDraft",
+            "emailBodyDraft",
+            "mailDraft",
+            "followup1Draft",
+            "followup2Draft",
+          ],
           "Provide at least one draft field to update.",
         );
 
@@ -525,6 +585,9 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
           {
             connectionNoteDraft: params.connectionNoteDraft,
             dmDraft: params.dmDraft,
+            emailSubjectDraft: params.emailSubjectDraft,
+            emailBodyDraft: params.emailBodyDraft,
+            mailDraft: params.mailDraft,
             followup1Draft: params.followup1Draft,
             followup2Draft: params.followup2Draft,
           },

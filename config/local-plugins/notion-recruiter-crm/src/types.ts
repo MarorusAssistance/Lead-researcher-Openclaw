@@ -38,31 +38,40 @@ export const TouchTypeSchema = Type.Union([
   Type.Literal("other"),
 ]);
 
+const NullableStringSchema = Type.Union([Type.String(), Type.Null()]);
+const NullableBooleanSchema = Type.Union([Type.Boolean(), Type.Null()]);
+const NullableNumberSchema = Type.Union([Type.Number(), Type.Null()]);
+
 export const UpsertRecruiterSchema = Type.Object(
   {
     name: Type.String({ minLength: 1 }),
-    linkedinUrl: Type.String({ minLength: 1 }),
-    company: Type.Optional(Type.String()),
-    role: Type.Optional(Type.String()),
-    recruiterType: Type.Optional(RecruiterTypeSchema),
-    region: Type.Optional(Type.String()),
-    fitScore: Type.Optional(Type.Number()),
-    status: Type.Optional(Type.String()),
-    sourceNotes: Type.Optional(Type.String()),
-    hook1: Type.Optional(Type.String()),
-    hook2: Type.Optional(Type.String()),
-    fitSummary: Type.Optional(Type.String()),
-    connectionNoteDraft: Type.Optional(Type.String()),
-    dmDraft: Type.Optional(Type.String()),
-    followup1Draft: Type.Optional(Type.String()),
-    followup2Draft: Type.Optional(Type.String()),
-    lastReplySummary: Type.Optional(Type.String()),
-    interactionLog: Type.Optional(Type.String()),
-    lastTouchAt: Type.Optional(Type.String()),
-    nextActionAt: Type.Optional(Type.String()),
-    nextActionType: Type.Optional(Type.String()),
-    cvSent: Type.Optional(Type.Boolean()),
-    cvUrl: Type.Optional(Type.String()),
+    linkedinUrl: Type.Optional(Type.Union([Type.String({ minLength: 1 }), Type.Null()])),
+    company: Type.Optional(NullableStringSchema),
+    role: Type.Optional(NullableStringSchema),
+    recruiterType: Type.Optional(Type.Union([RecruiterTypeSchema, Type.Null()])),
+    region: Type.Optional(NullableStringSchema),
+    fitScore: Type.Optional(NullableNumberSchema),
+    status: Type.Optional(NullableStringSchema),
+    sourceNotes: Type.Optional(NullableStringSchema),
+    hook1: Type.Optional(NullableStringSchema),
+    hook2: Type.Optional(NullableStringSchema),
+    fitSummary: Type.Optional(NullableStringSchema),
+    connectionNoteDraft: Type.Optional(NullableStringSchema),
+    dmDraft: Type.Optional(NullableStringSchema),
+    emailSubjectDraft: Type.Optional(NullableStringSchema),
+    emailBodyDraft: Type.Optional(NullableStringSchema),
+    mailDraft: Type.Optional(NullableStringSchema),
+    followup1Draft: Type.Optional(NullableStringSchema),
+    followup2Draft: Type.Optional(NullableStringSchema),
+    lastReplySummary: Type.Optional(NullableStringSchema),
+    interactionLog: Type.Optional(NullableStringSchema),
+    lastTouchAt: Type.Optional(NullableStringSchema),
+    nextActionAt: Type.Optional(NullableStringSchema),
+    nextActionType: Type.Optional(NullableStringSchema),
+    cvSent: Type.Optional(NullableBooleanSchema),
+    cvUrl: Type.Optional(NullableStringSchema),
+    cvUrlEn: Type.Optional(NullableStringSchema),
+    cvUrlEs: Type.Optional(NullableStringSchema),
   },
   { additionalProperties: false },
 );
@@ -87,10 +96,10 @@ export const QueryDueFollowupsSchema = Type.Object(
 export const SaveResearchSchema = Type.Object(
   {
     linkedinUrl: Type.String({ minLength: 1 }),
-    sourceNotes: Type.Optional(Type.String()),
-    hook1: Type.Optional(Type.String()),
-    hook2: Type.Optional(Type.String()),
-    fitSummary: Type.Optional(Type.String()),
+  sourceNotes: Type.Optional(Type.String()),
+  hook1: Type.Optional(Type.String()),
+  hook2: Type.Optional(Type.String()),
+  fitSummary: Type.Optional(Type.String()),
   },
   { additionalProperties: false },
 );
@@ -100,6 +109,9 @@ export const SaveDraftsSchema = Type.Object(
     linkedinUrl: Type.String({ minLength: 1 }),
     connectionNoteDraft: Type.Optional(Type.String()),
     dmDraft: Type.Optional(Type.String()),
+    emailSubjectDraft: Type.Optional(Type.String()),
+    emailBodyDraft: Type.Optional(Type.String()),
+    mailDraft: Type.Optional(Type.String()),
     followup1Draft: Type.Optional(Type.String()),
     followup2Draft: Type.Optional(Type.String()),
   },
@@ -169,8 +181,11 @@ export const PROPERTY_NAMES = {
   fitSummary: "Fit Summary",
   connectionNoteDraft: "Connection Note Draft",
   dmDraft: "DM Draft",
-  followup1Draft: "Followup 1 Draft",
-  followup2Draft: "Followup 2 Draft",
+  emailSubjectDraft: "Email Subject Draft",
+  emailBodyDraft: "Email Body Draft",
+  mailDraft: "Mail Draft",
+  followup1Draft: "Follow Up 1 Draft",
+  followup2Draft: "Follow Up 2 Draft",
   lastReplySummary: "Last Reply Summary",
   interactionLog: "Interaction Log",
   lastTouchAt: "Last Touch At",
@@ -178,6 +193,8 @@ export const PROPERTY_NAMES = {
   nextActionType: "Next Action Type",
   cvSent: "CV Sent",
   cvUrl: "CV URL",
+  cvUrlEn: "CV URL EN",
+  cvUrlEs: "CV URL ES",
 } as const;
 
 export type RecruiterFieldKey = keyof typeof PROPERTY_NAMES;
@@ -194,6 +211,7 @@ export type WritablePropertyType =
 
 export type RecruiterPropertySpec = {
   notionName: string;
+  aliases?: readonly string[];
   allowedTypes: readonly WritablePropertyType[];
   requiredOnCreate?: boolean;
   fallbackToAnyTitle?: boolean;
@@ -209,7 +227,6 @@ export const RECRUITER_PROPERTY_SPECS = {
   linkedinUrl: {
     notionName: PROPERTY_NAMES.linkedinUrl,
     allowedTypes: ["url"],
-    requiredOnCreate: true,
   },
   company: {
     notionName: PROPERTY_NAMES.company,
@@ -259,12 +276,26 @@ export const RECRUITER_PROPERTY_SPECS = {
     notionName: PROPERTY_NAMES.dmDraft,
     allowedTypes: ["rich_text"],
   },
+  emailSubjectDraft: {
+    notionName: PROPERTY_NAMES.emailSubjectDraft,
+    allowedTypes: ["rich_text"],
+  },
+  emailBodyDraft: {
+    notionName: PROPERTY_NAMES.emailBodyDraft,
+    allowedTypes: ["rich_text"],
+  },
+  mailDraft: {
+    notionName: PROPERTY_NAMES.mailDraft,
+    allowedTypes: ["rich_text"],
+  },
   followup1Draft: {
     notionName: PROPERTY_NAMES.followup1Draft,
+    aliases: ["Followup 1 Draft"],
     allowedTypes: ["rich_text"],
   },
   followup2Draft: {
     notionName: PROPERTY_NAMES.followup2Draft,
+    aliases: ["Followup 2 Draft"],
     allowedTypes: ["rich_text"],
   },
   lastReplySummary: {
@@ -293,6 +324,14 @@ export const RECRUITER_PROPERTY_SPECS = {
   },
   cvUrl: {
     notionName: PROPERTY_NAMES.cvUrl,
+    allowedTypes: ["url"],
+  },
+  cvUrlEn: {
+    notionName: PROPERTY_NAMES.cvUrlEn,
+    allowedTypes: ["url"],
+  },
+  cvUrlEs: {
+    notionName: PROPERTY_NAMES.cvUrlEs,
     allowedTypes: ["url"],
   },
 } as const satisfies Record<RecruiterFieldKey, RecruiterPropertySpec>;
@@ -361,6 +400,9 @@ export type RecruiterPropertyValues = {
   fitSummary?: string | null;
   connectionNoteDraft?: string | null;
   dmDraft?: string | null;
+  emailSubjectDraft?: string | null;
+  emailBodyDraft?: string | null;
+  mailDraft?: string | null;
   followup1Draft?: string | null;
   followup2Draft?: string | null;
   lastReplySummary?: string | null;
@@ -370,6 +412,8 @@ export type RecruiterPropertyValues = {
   nextActionType?: string | null;
   cvSent?: boolean | null;
   cvUrl?: string | null;
+  cvUrlEn?: string | null;
+  cvUrlEs?: string | null;
 };
 
 export type RecruiterRecord = {
@@ -389,6 +433,9 @@ export type RecruiterRecord = {
   fitSummary: string | null;
   connectionNoteDraft: string | null;
   dmDraft: string | null;
+  emailSubjectDraft: string | null;
+  emailBodyDraft: string | null;
+  mailDraft: string | null;
   followup1Draft: string | null;
   followup2Draft: string | null;
   lastReplySummary: string | null;
@@ -398,6 +445,8 @@ export type RecruiterRecord = {
   nextActionType: string | null;
   cvSent: boolean | null;
   cvUrl: string | null;
+  cvUrlEn: string | null;
+  cvUrlEs: string | null;
 };
 
 export type RecruiterSummary = Pick<

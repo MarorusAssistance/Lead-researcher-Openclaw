@@ -64,9 +64,25 @@ Use one field only: `campaignId`.
 
 If `campaignName` exists and `campaignId` does not, treat `campaignName` as `campaignId`.
 
-If intent is CAMPAIGN_GET_OR_CREATE and the user explicitly asks for a new campaign, `campaignId` must be provided or derivable from the request.
-If a new campaign was explicitly requested and no campaignId can be derived, return exactly:
-{"status":"VALIDATION_ERROR","error":"MISSING_CAMPAIGN_ID"}
+For natural-language requests that explicitly ask for a new campaign:
+- derive `campaignId` from the request whenever possible
+- use a short stable slug built from the strongest request constraints
+- normalize by lowercasing and using underscores only
+
+Preferred derivation order:
+1. geography or market
+2. company-size filter
+3. lead type or commercial theme
+4. prospecting intent
+
+Example derived ids:
+- `spain_5_50_ai_prospecting`
+- `spain_staffing_ai_leads`
+- `genai_spain_midmarket_prospecting`
+
+If intent is CAMPAIGN_GET_OR_CREATE or FIND_AND_REGISTER_ONE and the request explicitly asks for a new campaign:
+- first try to derive `campaignId`
+- return `MISSING_CAMPAIGN_ID` only if the input is structured JSON and no `campaignId` or `campaignName` was provided, or if the natural-language request contains no usable constraints at all
 
 For ad hoc FIND_AND_REGISTER_ONE requests where no explicit new campaign was requested, you may use:
 DEFAULT_CAMPAIGN_ID = "default_prospecting_campaign"

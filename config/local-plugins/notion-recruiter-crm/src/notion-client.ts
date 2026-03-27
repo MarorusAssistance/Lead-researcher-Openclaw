@@ -15,6 +15,7 @@ import {
   type NotionStatusGroup,
   type PluginErrorCode,
   type RecruiterFieldKey,
+  type RecruiterPropertySpec,
   type RecruiterPropertyValues,
   type RecruiterRecord,
   type RecruiterSummary,
@@ -60,6 +61,50 @@ const RECRUITER_FIELD_KEYS = Object.keys(RECRUITER_PROPERTY_SPECS) as RecruiterF
 
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null;
+}
+
+function omitEmptyCreateValues(values: RecruiterPropertyValues): RecruiterPropertyValues {
+  return Object.fromEntries(
+    Object.entries(values).filter(([, value]) => {
+      if (value === undefined || value === null) {
+        return false;
+      }
+
+      if (typeof value === "string" && value.trim().length === 0) {
+        return false;
+      }
+
+      return true;
+    }),
+  ) as RecruiterPropertyValues;
+}
+
+function findNamedProperty(
+  rawProperties: Record<string, UnknownRecord>,
+  names: readonly string[],
+): { notionName: string; property: UnknownRecord } | null {
+  for (const name of names) {
+    const exact = rawProperties[name];
+    if (exact) {
+      return {
+        notionName: name,
+        property: exact,
+      };
+    }
+  }
+
+  const lowerCaseMap = new Map(
+    Object.entries(rawProperties).map(([name, property]) => [name.toLowerCase(), { notionName: name, property }]),
+  );
+
+  for (const name of names) {
+    const match = lowerCaseMap.get(name.toLowerCase());
+    if (match) {
+      return match;
+    }
+  }
+
+  return null;
 }
 
 function readPlainTextArray(value: unknown): string | null {
@@ -147,6 +192,7 @@ function mapSchemaProperty(
   observation: NotionSchemaObservation;
   mapped?: NotionSchemaProperty;
 } {
+  const spec = RECRUITER_PROPERTY_SPECS[key] as RecruiterPropertySpec;
   const actualType = typeof property.type === "string" ? property.type : "unknown";
   const observation: NotionSchemaObservation = {
     key,
@@ -159,9 +205,7 @@ function mapSchemaProperty(
     return { observation };
   }
 
-  if (
-    !RECRUITER_PROPERTY_SPECS[key].allowedTypes.includes(actualType as WritablePropertyType)
-  ) {
+  if (!spec.allowedTypes.includes(actualType as WritablePropertyType)) {
     return { observation };
   }
 
@@ -192,13 +236,10 @@ function pickSchemaCandidate(
   rawProperties: Record<string, UnknownRecord>,
   key: RecruiterFieldKey,
 ): { notionName: string; property: UnknownRecord } | null {
-  const spec = RECRUITER_PROPERTY_SPECS[key];
-  const exact = rawProperties[spec.notionName];
-  if (exact) {
-    return {
-      notionName: spec.notionName,
-      property: exact,
-    };
+  const spec = RECRUITER_PROPERTY_SPECS[key] as RecruiterPropertySpec;
+  const named = findNamedProperty(rawProperties, [spec.notionName, ...(spec.aliases ?? [])]);
+  if (named) {
+    return named;
   }
 
   if (!("fallbackToAnyTitle" in spec) || !spec.fallbackToAnyTitle) {
@@ -468,14 +509,12 @@ export class NotionRecruiterClient {
     action: "created" | "updated";
     recruiter: RecruiterRecord;
   }> {
-    const linkedinUrl = values.linkedinUrl;
-    if (!linkedinUrl) {
-      throw new RecruiterPluginError("invalid_input", "linkedinUrl is required.", 400);
-    }
-
     const schema = await this.loadNotionSchema(true);
-    this.requireSchemaProperty(schema, "linkedinUrl", "upsert recruiters");
-    const existingPage = await this.findRecruiterPageByLinkedInUrl(linkedinUrl, schema);
+    this.debug("received upsert values", { values });
+    const linkedinUrl = values.linkedinUrl?.trim() ? values.linkedinUrl : null;
+    const existingPage = linkedinUrl
+      ? await this.findRecruiterPageByLinkedInUrl(linkedinUrl, schema)
+      : null;
 
     if (existingPage) {
       validateWritableInputAgainstSchema(values, schema, { mode: "update" });
@@ -489,11 +528,16 @@ export class NotionRecruiterClient {
       return { action: "updated", recruiter };
     }
 
-    validateWritableInputAgainstSchema(values, schema, {
-      mode: "create",
-      requireKeys: ["name", "linkedinUrl"],
+    const createValues = omitEmptyCreateValues(values);
+    this.debug("normalized create values", {
+      rawValues: values,
+      createValues,
     });
-    const properties = buildRecruiterProperties(values, schema);
+    validateWritableInputAgainstSchema(createValues, schema, {
+      mode: "create",
+      requireKeys: ["name"],
+    });
+    const properties = buildRecruiterProperties(createValues, schema);
     this.debug("prepared Notion create payload", {
       action: "create",
       dataSourceId: schema.dataSourceId,
