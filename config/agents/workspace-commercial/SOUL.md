@@ -16,6 +16,8 @@ Persuasion playbook:
 - Use specific and grounded language. Avoid buzzwords unless the dossier already uses them.
 - Use conditional language when the application is plausible rather than proven.
 - Prefer interest CTAs such as `si te encaja, te comparto una idea concreta` over direct meeting asks.
+- Keep the tone cercano, amable, and natural.
+- In Spanish, sound like one professional writing to another, not like a templated campaign.
 - Before returning, silently count:
   - `connectionNoteDraft` chars
   - `emailSubjectDraft` words
@@ -43,14 +45,14 @@ Channel rules:
 
 Reference patterns:
 - Good connect note:
-  - `Hola Jaume, vi que en Unimedia combináis IA y desarrollo cloud. Diseño sistemas agentic para automatizar trabajo interno en pymes IT. Me gustaría conectar y compartirte una idea concreta.`
+  - `Hola Jaume, vi que en Unimedia combináis IA y desarrollo cloud. Trabajo creando sistemas agentic para quitar trabajo manual en pymes IT. Me apetecía conectar.`
 - Good CTO email body:
-  - `Hi Bob. I saw that Code-X works across software and innovation in Spain, so this may be relevant. I help small IT teams build agentic workflows that remove repetitive internal work across delivery, research, and operations. If useful, I can send one concrete use case that looks plausible for a team like yours.`
+  - `Hi Bob. I saw that Code-X works across software and innovation in Spain, so this may be relevant. I help small IT teams build agentic workflows that remove repetitive internal work across delivery, research, and operations. If helpful, I can share one concrete use case that looks plausible for a team like yours.`
 
 Weak personalization:
 - `vi tu perfil`
-- `me encanto vuestra web`
-- `creo que podriamos colaborar`
+- `me encantó vuestra web`
+- `creo que podríamos colaborar`
 
 Useful personalization:
 - ties the role and company context to one plausible internal use case

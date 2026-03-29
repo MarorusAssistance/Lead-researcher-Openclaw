@@ -451,8 +451,74 @@ function firstNonBlankString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function repairCommonMojibake(value: string): string {
+  const trimmed = value.trim();
+  if (!/[ÃÂâ€�â€™â€œâ€\uFFFD]/.test(trimmed)) {
+    return trimmed.normalize("NFC");
+  }
+
+  try {
+    const repaired = Buffer.from(trimmed, "latin1").toString("utf8").trim().normalize("NFC");
+    if (
+      repaired.length > 0 &&
+      !/[ÃÂâ€�â€™â€œâ€\uFFFD]/.test(repaired) &&
+      repaired !== trimmed
+    ) {
+      return repaired;
+    }
+  } catch {
+    // Keep the original value when repair is not possible.
+  }
+
+  return trimmed.normalize("NFC");
+}
+
+function normalizeStoredText(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+
+  return repairCommonMojibake(trimmed);
+}
+
+function normalizeOptionalStoredText(value: unknown): string | null | undefined {
+  if (value === null) {
+    return null;
+  }
+
+  return normalizeStoredText(value);
+}
+
+function normalizeStoredStringArray(values: string[]): string[] {
+  return values
+    .map((value) => normalizeStoredText(value))
+    .filter((value): value is string => Boolean(value));
+}
+
+function hasLikelyCorruptedHumanText(value: string): boolean {
+  return /\p{L}[?\uFFFD]\p{L}/u.test(value);
+}
+
+function requireCleanHumanText(value: string, label: string): string {
+  if (hasLikelyCorruptedHumanText(value)) {
+    throw new RecruiterPluginError(
+      "invalid_input",
+      `${label} looks encoding-corrupted after normalization.`,
+      400,
+      { value },
+    );
+  }
+
+  return value;
+}
+
 function toNullableString(value: unknown): string | null {
-  return firstNonBlankString(value) ?? null;
+  return normalizeStoredText(value) ?? null;
 }
 
 function normalizeEvidenceItems(
@@ -1051,6 +1117,9 @@ function canonicalizeCommercialRequest(payload: Record<string, unknown>): Record
       status:
         asMaybeString(rawQualification.status) === "REJECT" ? "REJECT" : "ACCEPT",
       reasons: asNonEmptyTrimmedStringArray(rawQualification.reasons) ?? ["Commercially relevant lead."],
+      ...(coerceLeadProfile(rawQualification.leadProfile)
+        ? { leadProfile: coerceLeadProfile(rawQualification.leadProfile) }
+        : {}),
       ...(isPlainRecord(rawQualification.closeMatch)
         ? {
             closeMatch: {
@@ -1184,6 +1253,7 @@ function canonicalizeCrmRequest(payload: Record<string, unknown>): Record<string
       runId: payload.runId,
       candidate,
       decision,
+      leadProfile: coerceLeadProfile(payload.leadProfile) ?? undefined,
       outreachPack: isPlainRecord(payload.outreachPack) ? payload.outreachPack : undefined,
       campaignStateUpdate,
     };
@@ -1274,11 +1344,17 @@ type MainCloseMatch = {
   reasons: string[];
 };
 
+type MainLeadProfile = {
+  recruiterType: "in_house" | "agency";
+  region: string;
+};
+
 type MainShortlistOption = {
   candidate: Record<string, unknown>;
   summary: string;
   missedFilters: string[];
   reasons: string[];
+  leadProfile?: MainLeadProfile;
   outreachPack?: MainOutreachPack;
 };
 
@@ -1299,6 +1375,7 @@ type MainLeadSearchState = {
   currentCandidate: Record<string, unknown> | null;
   currentQualificationReasons: string[];
   currentCloseMatch: MainCloseMatch | null;
+  currentLeadProfile: MainLeadProfile | null;
   currentOutreachPack: MainOutreachPack | null;
   currentMatchMode: MainMatchMode | null;
   enrichRoundCount: number;
@@ -1461,6 +1538,7 @@ function initialLeadSearchState(userText: string): MainLeadSearchState {
     currentCandidate: null,
     currentQualificationReasons: [],
     currentCloseMatch: null,
+    currentLeadProfile: null,
     currentOutreachPack: null,
     currentMatchMode: null,
     enrichRoundCount: 0,
@@ -1501,7 +1579,7 @@ function buildFinalResult(
     outcome: "final",
     state,
     finalType,
-    userMessage,
+    userMessage: repairCommonMojibake(userMessage),
   };
 }
 
@@ -1741,6 +1819,148 @@ function buildFallbackOutreachPack(
   };
 }
 
+function buildFriendlyFallbackOutreachPack(
+  language: MainLanguage,
+  candidate: Record<string, unknown> | null,
+  reasons: string[],
+): MainOutreachPack {
+  const leadName = candidateLeadName(candidate) ?? (language === "es" ? "equipo" : "team");
+  const companyName =
+    candidateCompanyName(candidate) ?? (language === "es" ? "tu empresa" : "your company");
+  const person = candidate && isPlainRecord(candidate.person) ? candidate.person : {};
+  const roleTitle =
+    normalizeStoredText(person.roleTitle) ??
+    (language === "es" ? "un rol técnico" : "a technical role");
+  const normalizedRole = roleTitle.replace(/\.$/, "");
+  const base = buildFallbackOutreachPack(language, candidate, reasons);
+
+  const connectionNoteDraft =
+    language === "es"
+      ? truncateConnectionNote(
+          `Hola ${leadName}, vi que en ${companyName} llevas ${normalizedRole}. Trabajo creando sistemas agentic/GenAI para quitar trabajo manual en equipos IT pequeños. Me apetecía conectar.`,
+        )
+      : truncateConnectionNote(
+          `Hi ${leadName}, I saw that at ${companyName} you lead ${normalizedRole}. I build agentic/GenAI systems that remove manual internal work for small IT teams. Happy to connect.`,
+        );
+
+  const dmDraft =
+    language === "es"
+      ? `Hola ${leadName}.\n\nVi que en ${companyName} llevas ${normalizedRole} y me dio la sensación de que podía tener sentido escribirte. Suelo ayudar a equipos IT pequeños a quitar trabajo repetitivo con sistemas agentic/GenAI útiles y bastante aterrizados.\n\nEn contextos como el vuestro suele encajar en operaciones internas, research comercial o preparación de propuestas. Si te cuadra, te comparto una idea concreta pensada para un entorno como el vuestro.`
+      : `Hi ${leadName}.\n\nI noticed that at ${companyName} you lead ${normalizedRole}, and it felt worth reaching out. I usually help small IT teams remove repetitive internal work with practical agentic/GenAI systems.\n\nIn setups like yours that often lands in internal operations, commercial research, or proposal prep. If it sounds relevant, I can share one concrete idea that would plausibly fit your environment.`;
+
+  const emailSubjectDraft =
+    language === "es" ? "una idea de automatización" : "one workflow idea";
+
+  const emailBodyDraft =
+    language === "es"
+      ? `Hola ${leadName}. Vi que en ${companyName} llevas ${normalizedRole}, y pensé que quizá te pueda interesar esto. Suelo ayudar a equipos IT pequeños a quitar carga manual con sistemas agentic/GenAI útiles y bastante aterrizados, normalmente en operaciones internas, research comercial o preparación de propuestas. La idea no es meter una capa enorme de producto, sino detectar un flujo manual claro y resolverlo de forma simple y útil. Si te encaja, te comparto una idea concreta que podría tener sentido para vuestro contexto.`
+      : `Hi ${leadName}. I saw that at ${companyName} you lead ${normalizedRole}, and I thought this might be worth sharing. I usually help small IT teams remove manual internal work with practical agentic/GenAI systems, often around operations, commercial research, or proposal prep. The idea is not to add a heavy product layer, but to spot one clear workflow and solve it in a simple, useful way. If helpful, I can share one concrete idea that could make sense in your context.`;
+
+  return {
+    ...base,
+    connectionNoteDraft: repairCommonMojibake(connectionNoteDraft),
+    dmDraft: repairCommonMojibake(dmDraft),
+    emailSubjectDraft: repairCommonMojibake(emailSubjectDraft),
+    emailBodyDraft: repairCommonMojibake(emailBodyDraft),
+  };
+}
+
+function coerceLeadProfile(raw: unknown): MainLeadProfile | null {
+  if (!isPlainRecord(raw)) {
+    return null;
+  }
+
+  const recruiterType = raw.recruiterType;
+  const region = normalizeStoredText(raw.region);
+  if ((recruiterType !== "in_house" && recruiterType !== "agency") || !region) {
+    return null;
+  }
+
+  return {
+    recruiterType,
+    region,
+  };
+}
+
+function normalizeTextForMatch(value: string): string {
+  return repairCommonMojibake(value)
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+}
+
+function collectCandidateMatchText(candidate: Record<string, unknown> | null): string {
+  if (!candidate) {
+    return "";
+  }
+
+  const person = isPlainRecord(candidate.person) ? candidate.person : {};
+  const company = isPlainRecord(candidate.company) ? candidate.company : {};
+  const fitSignals = Array.isArray(candidate.fitSignals) ? candidate.fitSignals : [];
+  const evidence = Array.isArray(candidate.evidence) ? candidate.evidence : [];
+
+  return [
+    firstNonBlankString(person.fullName),
+    firstNonBlankString(person.roleTitle),
+    firstNonBlankString(company.name),
+    firstNonBlankString(company.website),
+    firstNonBlankString(company.domain),
+    firstNonBlankString(candidate.notes),
+    ...fitSignals.map((value) => firstNonBlankString(value)),
+    ...evidence.flatMap((item) =>
+      isPlainRecord(item)
+        ? [firstNonBlankString(item.claim), firstNonBlankString(item.url)]
+        : [],
+    ),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => normalizeTextForMatch(value))
+    .join(" ");
+}
+
+function deriveLeadProfile(
+  candidate: Record<string, unknown> | null,
+  fallbackCountryCode?: string,
+): MainLeadProfile | null {
+  if (!candidate) {
+    return null;
+  }
+
+  const text = collectCandidateMatchText(candidate);
+  const person = isPlainRecord(candidate.person) ? candidate.person : {};
+  const company = isPlainRecord(candidate.company) ? candidate.company : {};
+  const roleTitle = normalizeTextForMatch(firstNonBlankString(person.roleTitle) ?? "");
+  const companyName = normalizeTextForMatch(firstNonBlankString(company.name) ?? "");
+  const domain = normalizeTextForMatch(firstNonBlankString(company.domain) ?? "");
+
+  const looksAgency = /\b(recruit|recruitment|staffing|talent|headhunt|search firm|executive search)\b/.test(
+    `${roleTitle} ${companyName} ${domain} ${text}`,
+  );
+
+  let region: string | null = null;
+  if (
+    /\b(spain|espana|madrid|barcelona|valencia|bilbao|malaga|sevilla|alicante|zaragoza|murcia|granada|vigo|palma|ibiza|canarias|tenerife)\b/.test(
+      text,
+    ) ||
+    domain.endsWith(".es")
+  ) {
+    region = "Spain";
+  } else if (/\b(europe|europa|european|emea|eu)\b/.test(text)) {
+    region = "Europe";
+  } else if (fallbackCountryCode === "es") {
+    region = "Spain";
+  }
+
+  if (!region) {
+    return null;
+  }
+
+  return {
+    recruiterType: looksAgency ? "agency" : "in_house",
+    region,
+  };
+}
+
 function coerceLeadShortlistOption(raw: unknown): MainShortlistOption | null {
   if (!isPlainRecord(raw)) {
     return null;
@@ -1750,6 +1970,7 @@ function coerceLeadShortlistOption(raw: unknown): MainShortlistOption | null {
   const summary = firstNonBlankString(raw.summary);
   const missedFilters = asNonEmptyTrimmedStringArray(raw.missedFilters);
   const reasons = asNonEmptyTrimmedStringArray(raw.reasons);
+  const leadProfile = coerceLeadProfile(raw.leadProfile);
 
   if (!candidate || !summary || !missedFilters || !reasons) {
     return null;
@@ -1760,6 +1981,7 @@ function coerceLeadShortlistOption(raw: unknown): MainShortlistOption | null {
     summary,
     missedFilters,
     reasons,
+    ...(leadProfile ? { leadProfile } : {}),
     outreachPack: coerceOutreachPack(raw.outreachPack) ?? undefined,
   };
 }
@@ -1872,6 +2094,7 @@ function coerceMainFlowState(raw: unknown): MainFlowState | null {
               reasons: asNonEmptyTrimmedStringArray(raw.currentCloseMatch.reasons)!,
             }
           : null,
+      currentLeadProfile: coerceLeadProfile(raw.currentLeadProfile),
       currentOutreachPack: coerceOutreachPack(raw.currentOutreachPack),
       currentMatchMode:
         typeof raw.currentMatchMode === "string" &&
@@ -1954,6 +2177,7 @@ function clearCurrentLeadContext(state: MainLeadSearchState): MainLeadSearchStat
   state.currentCandidate = null;
   state.currentQualificationReasons = [];
   state.currentCloseMatch = null;
+  state.currentLeadProfile = null;
   state.currentOutreachPack = null;
   state.enrichRoundCount = 0;
   return state;
@@ -1974,6 +2198,27 @@ function addSeenCandidate(
     leadName ? [leadName] : undefined,
   );
   return state;
+}
+
+function preferredCountryForLeadProfile(state: MainLeadSearchState): string | undefined {
+  if (state.currentMatchMode !== "STRICT" && state.currentMatchMode !== "RELAX_SIZE") {
+    return undefined;
+  }
+
+  const targetFilters = isPlainRecord(state.targetFilters) ? state.targetFilters : {};
+  return normalizeCountryCode(targetFilters.preferredCountry);
+}
+
+function resolveLeadProfile(
+  state: MainLeadSearchState,
+  candidate: Record<string, unknown> | null,
+  rawLeadProfile?: unknown,
+): MainLeadProfile | null {
+  return (
+    coerceLeadProfile(rawLeadProfile) ??
+    state.currentLeadProfile ??
+    deriveLeadProfile(candidate, preferredCountryForLeadProfile(state))
+  );
 }
 
 function isDuplicateCandidate(
@@ -2157,6 +2402,7 @@ function buildCommercialRequest(
           state.currentQualificationReasons.length > 0
             ? state.currentQualificationReasons
             : ["Commercially relevant lead."],
+        ...(state.currentLeadProfile ? { leadProfile: state.currentLeadProfile } : {}),
         ...(state.currentCloseMatch ? { closeMatch: state.currentCloseMatch } : {}),
       },
       channelRules: {
@@ -2190,6 +2436,7 @@ function buildRegisterAcceptedRequest(
   state: MainLeadSearchState,
   candidate: Record<string, unknown>,
   reasons: string[],
+  leadProfile?: MainLeadProfile | null,
   outreachPack?: MainOutreachPack | null,
 ): MainNextSendRequest {
   const leadName = candidateLeadName(candidate);
@@ -2211,6 +2458,7 @@ function buildRegisterAcceptedRequest(
         status: "ACCEPT",
         reasons,
       },
+      ...(leadProfile ? { leadProfile } : {}),
       ...(outreachPack ? { outreachPack } : {}),
       campaignStateUpdate: {
         searchedCompanyNamesAdd: companyName ? [companyName] : [],
@@ -2346,6 +2594,13 @@ function buildRegisterShortlistOptionRequest(
           asNonEmptyTrimmedStringArray(option.reasons) ??
           ["User approved a near-match shortlisted lead."],
       },
+      ...(coerceLeadProfile(isPlainRecord(option) ? option.leadProfile : undefined)
+        ? {
+            leadProfile: coerceLeadProfile(
+              isPlainRecord(option) ? option.leadProfile : undefined,
+            ),
+          }
+        : {}),
       ...(coerceOutreachPack(isPlainRecord(option) ? option.outreachPack : undefined)
         ? {
             outreachPack: coerceOutreachPack(
@@ -2479,7 +2734,7 @@ function handleLeadSearchResponse(
         return nextLeadSearchAttemptOrFinal(state);
       }
 
-      const fallbackOutreachPack = buildFallbackOutreachPack(
+      const fallbackOutreachPack = buildFriendlyFallbackOutreachPack(
         state.language,
         candidate,
         state.currentQualificationReasons.length > 0
@@ -2493,6 +2748,7 @@ function handleLeadSearchResponse(
           summary: state.currentCloseMatch.summary,
           missedFilters: [...state.currentCloseMatch.missedFilters],
           reasons: [...state.currentCloseMatch.reasons],
+          ...(state.currentLeadProfile ? { leadProfile: state.currentLeadProfile } : {}),
           outreachPack: fallbackOutreachPack,
         });
         addSeenCandidate(state, candidate);
@@ -2509,6 +2765,7 @@ function handleLeadSearchResponse(
           state.currentQualificationReasons.length > 0
             ? state.currentQualificationReasons
             : ["Accepted by qualifier."],
+          state.currentLeadProfile,
           fallbackOutreachPack,
         ),
       };
@@ -2638,6 +2895,7 @@ function handleLeadSearchResponse(
         asNonEmptyTrimmedStringArray(isPlainRecord(parsed.decision) ? parsed.decision.reasons : undefined) ??
         ["Accepted by qualifier."];
       state.currentCloseMatch = null;
+      state.currentLeadProfile = resolveLeadProfile(state, candidate, parsed.leadProfile);
       state.currentOutreachPack = null;
       return {
         ok: true,
@@ -2659,6 +2917,7 @@ function handleLeadSearchResponse(
           reasons:
             asNonEmptyTrimmedStringArray(parsed.closeMatch.reasons) ?? ["Strong lead with a near miss."],
         };
+        state.currentLeadProfile = resolveLeadProfile(state, candidate, parsed.leadProfile);
         state.currentOutreachPack = null;
         return {
           ok: true,
@@ -2710,7 +2969,7 @@ function handleLeadSearchResponse(
 
     const outreachPack =
       (parsed.status === "READY" ? coerceOutreachPack(parsed.outreachPack) : null) ??
-      buildFallbackOutreachPack(
+      buildFriendlyFallbackOutreachPack(
         state.language,
         candidate,
         state.currentQualificationReasons.length > 0
@@ -2724,6 +2983,7 @@ function handleLeadSearchResponse(
         summary: state.currentCloseMatch.summary,
         missedFilters: [...state.currentCloseMatch.missedFilters],
         reasons: [...state.currentCloseMatch.reasons],
+        ...(state.currentLeadProfile ? { leadProfile: state.currentLeadProfile } : {}),
         outreachPack,
       });
       addSeenCandidate(state, candidate);
@@ -2741,6 +3001,7 @@ function handleLeadSearchResponse(
         state.currentQualificationReasons.length > 0
           ? state.currentQualificationReasons
           : ["Accepted by qualifier."],
+        state.currentLeadProfile,
         outreachPack,
       ),
     };
@@ -3316,15 +3577,40 @@ async function registerAcceptedLeadAction(params: {
     notes: string | null;
   };
   decision: { reasons: string[] };
+  leadProfile?: MainLeadProfile;
   outreachPack?: MainOutreachPack;
   campaignStateUpdate: {
     searchedCompanyNamesAdd: string[];
     registeredLeadNamesAdd: string[];
   };
 }, client: NotionRecruiterClient) {
-  const name = requireAcceptedLeadPersonName(params.candidate.person.fullName);
-  const company = requireCompanyName(params.candidate.company.name);
+  const name = requireCleanHumanText(
+    repairCommonMojibake(requireAcceptedLeadPersonName(params.candidate.person.fullName)),
+    "candidate.person.fullName",
+  );
+  const company = requireCleanHumanText(
+    repairCommonMojibake(requireCompanyName(params.candidate.company.name)),
+    "candidate.company.name",
+  );
+  const role = normalizeStoredText(params.candidate.person.roleTitle);
+  const notes = normalizeOptionalStoredText(params.candidate.notes);
+  const reasons = normalizeStoredStringArray(params.decision.reasons);
   const outreachPack = coerceOutreachPack(params.outreachPack);
+  const normalizedOutreachPack = outreachPack
+    ? {
+        sourceNotes: repairCommonMojibake(outreachPack.sourceNotes),
+        hook1: repairCommonMojibake(outreachPack.hook1),
+        hook2: repairCommonMojibake(outreachPack.hook2),
+        fitSummary: repairCommonMojibake(outreachPack.fitSummary),
+        connectionNoteDraft: repairCommonMojibake(outreachPack.connectionNoteDraft),
+        dmDraft: repairCommonMojibake(outreachPack.dmDraft),
+        emailSubjectDraft: repairCommonMojibake(outreachPack.emailSubjectDraft),
+        emailBodyDraft: repairCommonMojibake(outreachPack.emailBodyDraft),
+        nextActionType: outreachPack.nextActionType,
+      }
+    : null;
+  const resolvedLeadProfile =
+    coerceLeadProfile(params.leadProfile) ?? deriveLeadProfile(params.candidate as Record<string, unknown>);
   const schema = await client.loadNotionSchema(true);
   const defaultCvFields = {
     ...(schema.propertiesByKey.cvSent ? { cvSent: DEFAULT_CV_SENT } : {}),
@@ -3337,20 +3623,22 @@ async function registerAcceptedLeadAction(params: {
     name,
     linkedinUrl: normalizeOptionalLinkedInUrl(params.candidate.person.linkedinUrl),
     company,
-    role: params.candidate.person.roleTitle ?? undefined,
+    role: role ? requireCleanHumanText(role, "candidate.person.roleTitle") : undefined,
+    recruiterType: resolvedLeadProfile?.recruiterType,
+    region: resolvedLeadProfile?.region,
     fitScore: 95,
     status: DEFAULT_STATUS,
     sourceNotes:
-      outreachPack?.sourceNotes ??
-      buildAcceptedLeadSourceNotes(params.decision.reasons, params.candidate.evidence),
-    hook1: outreachPack?.hook1,
-    hook2: outreachPack?.hook2,
-    fitSummary: outreachPack?.fitSummary ?? params.candidate.notes ?? params.decision.reasons.join(" "),
-    connectionNoteDraft: outreachPack?.connectionNoteDraft,
-    dmDraft: outreachPack?.dmDraft,
-    emailSubjectDraft: outreachPack?.emailSubjectDraft,
-    emailBodyDraft: outreachPack?.emailBodyDraft,
-    nextActionType: outreachPack?.nextActionType ?? DEFAULT_NEXT_ACTION_TYPE,
+      normalizedOutreachPack?.sourceNotes ??
+      repairCommonMojibake(buildAcceptedLeadSourceNotes(reasons, params.candidate.evidence)),
+    hook1: normalizedOutreachPack?.hook1,
+    hook2: normalizedOutreachPack?.hook2,
+    fitSummary: normalizedOutreachPack?.fitSummary ?? notes ?? reasons.join(" "),
+    connectionNoteDraft: normalizedOutreachPack?.connectionNoteDraft,
+    dmDraft: normalizedOutreachPack?.dmDraft,
+    emailSubjectDraft: normalizedOutreachPack?.emailSubjectDraft,
+    emailBodyDraft: normalizedOutreachPack?.emailBodyDraft,
+    nextActionType: normalizedOutreachPack?.nextActionType ?? DEFAULT_NEXT_ACTION_TYPE,
     ...defaultCvFields,
   });
 
@@ -3419,6 +3707,7 @@ async function savePendingShortlistAction(params: {
       summary: string;
       missedFilters: string[];
       reasons: string[];
+      leadProfile?: MainLeadProfile;
       outreachPack?: MainOutreachPack;
     }>;
   };
@@ -3485,6 +3774,7 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
             notes: string | null;
           };
           decision: { reasons: string[] };
+          leadProfile?: MainLeadProfile;
           outreachPack?: MainOutreachPack;
           campaignStateUpdate: {
             searchedCompanyNamesAdd: string[];
@@ -3548,6 +3838,7 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
               summary: string;
               missedFilters: string[];
               reasons: string[];
+              leadProfile?: MainLeadProfile;
               outreachPack?: MainOutreachPack;
             }>;
           };
@@ -3957,27 +4248,39 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
         api.logger.debug?.(
           `[notion-recruiter-crm] notion_recruiter_upsert raw params ${JSON.stringify(rawParams)}`,
         );
+        const normalizedName = requireCleanHumanText(
+          repairCommonMojibake(params.name),
+          "name",
+        );
+        const normalizedCompany = normalizeOptionalStoredText(params.company);
+        const normalizedRole = normalizeOptionalStoredText(params.role);
         const normalizedInput = {
-          name: params.name.trim(),
+          name: normalizedName,
           linkedinUrl: normalizeOptionalLinkedInUrl(params.linkedinUrl),
-          company: params.company,
-          role: params.role,
+          company:
+            normalizedCompany !== undefined && normalizedCompany !== null
+              ? requireCleanHumanText(normalizedCompany, "company")
+              : normalizedCompany,
+          role:
+            normalizedRole !== undefined && normalizedRole !== null
+              ? requireCleanHumanText(normalizedRole, "role")
+              : normalizedRole,
           recruiterType: params.recruiterType,
-          region: params.region,
+          region: normalizeOptionalStoredText(params.region),
           fitScore: params.fitScore,
           status: isNonBlankString(params.status) ? params.status.trim() : DEFAULT_STATUS,
-          sourceNotes: params.sourceNotes,
-          hook1: params.hook1,
-          hook2: params.hook2,
-          fitSummary: params.fitSummary,
-          connectionNoteDraft: params.connectionNoteDraft,
-          dmDraft: params.dmDraft,
-          emailSubjectDraft: params.emailSubjectDraft,
-          emailBodyDraft: params.emailBodyDraft,
-          followup1Draft: params.followup1Draft,
-          followup2Draft: params.followup2Draft,
-          lastReplySummary: params.lastReplySummary,
-          interactionLog: params.interactionLog,
+          sourceNotes: normalizeOptionalStoredText(params.sourceNotes),
+          hook1: normalizeOptionalStoredText(params.hook1),
+          hook2: normalizeOptionalStoredText(params.hook2),
+          fitSummary: normalizeOptionalStoredText(params.fitSummary),
+          connectionNoteDraft: normalizeOptionalStoredText(params.connectionNoteDraft),
+          dmDraft: normalizeOptionalStoredText(params.dmDraft),
+          emailSubjectDraft: normalizeOptionalStoredText(params.emailSubjectDraft),
+          emailBodyDraft: normalizeOptionalStoredText(params.emailBodyDraft),
+          followup1Draft: normalizeOptionalStoredText(params.followup1Draft),
+          followup2Draft: normalizeOptionalStoredText(params.followup2Draft),
+          lastReplySummary: normalizeOptionalStoredText(params.lastReplySummary),
+          interactionLog: normalizeOptionalStoredText(params.interactionLog),
           lastTouchAt: normalizeOptionalIsoDateTime(params.lastTouchAt, "lastTouchAt"),
           nextActionAt: normalizeOptionalIsoDateTime(params.nextActionAt, "nextActionAt"),
           nextActionType: isNonBlankString(params.nextActionType)

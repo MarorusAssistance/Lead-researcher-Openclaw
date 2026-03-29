@@ -13,6 +13,10 @@ export interface PendingShortlistOption {
   summary: string;
   missedFilters: string[];
   reasons: string[];
+  leadProfile?: {
+    recruiterType: "in_house" | "agency";
+    region: string;
+  };
   outreachPack?: {
     sourceNotes: string;
     hook1: string;
@@ -99,6 +103,32 @@ function coercePendingShortlistOption(input: unknown): PendingShortlistOption {
   }
 
   let outreachPack: PendingShortlistOption["outreachPack"];
+  let leadProfile: PendingShortlistOption["leadProfile"];
+
+  if (input.leadProfile !== undefined) {
+    if (!isRecord(input.leadProfile)) {
+      throw new Error("Pending shortlist option leadProfile must be an object.");
+    }
+
+    const recruiterType = input.leadProfile.recruiterType;
+    const region = input.leadProfile.region;
+
+    if (recruiterType !== "in_house" && recruiterType !== "agency") {
+      throw new Error(
+        "Pending shortlist option leadProfile.recruiterType must be in_house or agency.",
+      );
+    }
+
+    if (typeof region !== "string" || region.trim().length === 0) {
+      throw new Error("Pending shortlist option leadProfile.region must be a non-empty string.");
+    }
+
+    leadProfile = {
+      recruiterType,
+      region: region.trim(),
+    };
+  }
+
   if (input.outreachPack !== undefined) {
     if (!isRecord(input.outreachPack)) {
       throw new Error("Pending shortlist option outreachPack must be an object.");
@@ -147,6 +177,7 @@ function coercePendingShortlistOption(input: unknown): PendingShortlistOption {
     summary: input.summary.trim(),
     missedFilters: input.missedFilters.map((value) => value.trim()).filter(Boolean),
     reasons: input.reasons.map((value) => value.trim()).filter(Boolean),
+    leadProfile,
     outreachPack,
   };
 }

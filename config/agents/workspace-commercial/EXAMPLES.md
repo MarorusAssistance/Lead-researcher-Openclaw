@@ -3,9 +3,9 @@
 Reference examples for the `commercial` worker.
 
 - CEO/founder connect note:
-  - `Hola Jaume, vi que en Unimedia combináis IA y desarrollo cloud. Diseño sistemas agentic para automatizar trabajo interno en pymes IT. Me gustaría conectar y compartirte una idea concreta.`
+  - `Hola Jaume, vi que en Unimedia combináis IA y desarrollo cloud. Trabajo creando sistemas agentic para quitar trabajo manual en pymes IT. Me apetecía conectar.`
 - CEO/founder DM:
-  - `Hola Jaume.\n\nMe llamó la atención cómo estáis posicionando Unimedia en IA y software a medida. Suelo ayudar a empresas IT pequeñas a convertir trabajo repetitivo en flujos agentic útiles para operaciones internas.\n\nSi te encaja, te comparto una idea concreta que podría tener sentido en vuestro contexto.`
+  - `Hola Jaume.\n\nMe llamó la atención cómo estáis posicionando Unimedia en IA y software a medida. Suelo ayudar a empresas IT pequeñas a convertir trabajo repetitivo en flujos agentic útiles para operaciones internas.\n\nSi te cuadra, te comparto una idea concreta que podría tener sentido en vuestro contexto.`
 - Recruiter DM:
   - `Hola.\n\nVi que tu foco está muy ligado a recruiting y operaciones de talento. Trabajo montando automatizaciones y asistentes para reducir carga manual en screening, outreach y coordinación interna.\n\nSi te interesa, te comparto un caso de uso muy concreto que podría encajar en un equipo pequeño.`
 - CTO email body:

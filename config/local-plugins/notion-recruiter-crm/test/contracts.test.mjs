@@ -1970,6 +1970,11 @@ const validOutreachPack = {
   nextActionType: "connection_request",
 };
 
+const validLeadProfile = {
+  recruiterType: "in_house",
+  region: "Spain",
+};
+
 run("accepts a valid commercial request", () => {
   const result = parseAndValidateProspectingContract(
     "commercial_request",
@@ -2146,6 +2151,123 @@ run("accepts SAVE_PENDING_SHORTLIST requests with outreachPack", () => {
             missedFilters: ["company size 5-50"],
             reasons: ["Named founder", "Spain-based company"],
             outreachPack: validOutreachPack,
+          },
+        ],
+      },
+    }),
+  );
+
+  assert.equal(result.ok, true);
+});
+
+run("accepts qualifier ACCEPT responses with leadProfile", () => {
+  const result = parseAndValidateProspectingContract(
+    "qualifier_response",
+    JSON.stringify({
+      status: "ACCEPT",
+      candidateId: "cand_123",
+      leadProfile: validLeadProfile,
+      decision: {
+        verdict: "ACCEPT",
+        reasons: ["Named founder in Spain."],
+        missingFields: [],
+      },
+    }),
+    {
+      expectedCandidateId: "cand_123",
+    },
+  );
+
+  assert.equal(result.ok, true);
+});
+
+run("accepts REGISTER_ACCEPTED_LEAD requests with leadProfile", () => {
+  const result = parseAndValidateProspectingContract(
+    "crm_request",
+    JSON.stringify({
+      action: "REGISTER_ACCEPTED_LEAD",
+      candidate: {
+        candidateId: "cand_123",
+        person: {
+          fullName: "Jaume Vidal",
+          roleTitle: "CEO & Founder",
+          linkedinUrl: "https://www.linkedin.com/in/jaume-vidal",
+        },
+        company: {
+          name: "Unimedia Technology",
+          website: "https://www.unimedia.tech",
+          domain: "unimedia.tech",
+        },
+        fitSignals: ["Spain-based consultancy"],
+        evidence: [
+          {
+            type: "company_site",
+            url: "https://www.unimedia.tech",
+            claim: "Barcelona, Spain.",
+          },
+          {
+            type: "company_profile",
+            url: "https://clutch.co/profile/unimedia-technology",
+            claim: "10-49 employees.",
+          },
+        ],
+        notes: "Strong fit",
+      },
+      decision: {
+        status: "ACCEPT",
+        reasons: ["Accepted by qualifier."],
+      },
+      leadProfile: validLeadProfile,
+      campaignStateUpdate: {
+        searchedCompanyNamesAdd: ["Unimedia Technology"],
+        registeredLeadNamesAdd: ["Jaume Vidal"],
+      },
+    }),
+  );
+
+  assert.equal(result.ok, true);
+});
+
+run("accepts SAVE_PENDING_SHORTLIST requests with leadProfile", () => {
+  const result = parseAndValidateProspectingContract(
+    "crm_request",
+    JSON.stringify({
+      action: "SAVE_PENDING_SHORTLIST",
+      pendingShortlist: {
+        originalRequestSummary: "lead en espana 5-50",
+        options: [
+          {
+            candidate: {
+              candidateId: "cand_123",
+              person: {
+                fullName: "Jaume Vidal",
+                roleTitle: "CEO & Founder",
+                linkedinUrl: "https://www.linkedin.com/in/jaume-vidal",
+              },
+              company: {
+                name: "Unimedia Technology",
+                website: "https://www.unimedia.tech",
+                domain: "unimedia.tech",
+              },
+              fitSignals: ["Spain-based consultancy"],
+              evidence: [
+                {
+                  type: "company_site",
+                  url: "https://www.unimedia.tech",
+                  claim: "Barcelona, Spain.",
+                },
+                {
+                  type: "company_profile",
+                  url: "https://clutch.co/profile/unimedia-technology",
+                  claim: "10-49 employees.",
+                },
+              ],
+              notes: "Strong fit",
+            },
+            summary: "Strong CEO lead with a slight size near miss.",
+            missedFilters: ["company size 5-50"],
+            reasons: ["Named founder", "Spain-based company"],
+            leadProfile: validLeadProfile,
           },
         ],
       },

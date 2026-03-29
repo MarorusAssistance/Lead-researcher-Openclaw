@@ -191,6 +191,14 @@ export const CloseMatchSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const LeadProfileSchema = Type.Object(
+  {
+    recruiterType: Type.Union([Type.Literal("in_house"), Type.Literal("agency")]),
+    region: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
 export const QualifierEnrichDecisionSchema = Type.Composite([
   QualifierDecisionBaseSchema,
   Type.Object(
@@ -207,6 +215,7 @@ export const QualifierAcceptResponseSchema = Type.Object(
     status: Type.Literal("ACCEPT"),
     candidateId: Type.String({ minLength: 1 }),
     decision: QualifierAcceptDecisionSchema,
+    leadProfile: Type.Optional(LeadProfileSchema),
   },
   { additionalProperties: false },
 );
@@ -217,6 +226,7 @@ export const QualifierRejectResponseSchema = Type.Object(
     candidateId: Type.String({ minLength: 1 }),
     decision: QualifierRejectDecisionSchema,
     closeMatch: Type.Optional(CloseMatchSchema),
+    leadProfile: Type.Optional(LeadProfileSchema),
   },
   { additionalProperties: false },
 );
@@ -304,6 +314,7 @@ export const CommercialQualificationSchema = Type.Object(
     status: Type.Union([Type.Literal("ACCEPT"), Type.Literal("REJECT")]),
     reasons: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
     closeMatch: Type.Optional(CloseMatchSchema),
+    leadProfile: Type.Optional(LeadProfileSchema),
   },
   { additionalProperties: false },
 );
@@ -399,6 +410,7 @@ export const PendingShortlistOptionSchema = Type.Object(
     summary: Type.String({ minLength: 1 }),
     missedFilters: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
     reasons: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+    leadProfile: Type.Optional(LeadProfileSchema),
     outreachPack: Type.Optional(OutreachPackSchema),
   },
   { additionalProperties: false },
@@ -514,6 +526,7 @@ export const CrmRegisterAcceptedLeadRequestSchema = Type.Object(
     runId: Type.Optional(Type.String({ minLength: 1 })),
     candidate: CandidateSchema,
     decision: AcceptedLeadDecisionSchema,
+    leadProfile: Type.Optional(LeadProfileSchema),
     outreachPack: Type.Optional(OutreachPackSchema),
     campaignStateUpdate: CampaignStateUpdateSchema,
   },
