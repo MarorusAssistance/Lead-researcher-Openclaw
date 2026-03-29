@@ -17,6 +17,8 @@ mkdir -p "${STATE_DIR}"
 mkdir -p "${STATE_DIR}/plugin-state/notion-recruiter-crm"
 mkdir -p "${STATE_DIR}/workspace"
 mkdir -p "${STATE_DIR}/workspace-research"
+mkdir -p "${STATE_DIR}/workspace-sourcer"
+mkdir -p "${STATE_DIR}/workspace-qualifier"
 mkdir -p "${STATE_DIR}/workspace-crm"
 
 if [ ! -d /project/config/local-plugins/notion-recruiter-crm ] || [ ! -d /project/config/local-plugins/linkedin-research ]; then

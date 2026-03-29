@@ -129,16 +129,34 @@
       {
         "id": "main",
         "workspace": "/project/config/agents/workspace",
+        "model": {
+          "primary": "openai/gpt-4.1-mini",
+          "fallbacks": [
+            "openai/gpt-4o-mini",
+            "lmstudio/qwen/qwen3-30b-a3b-2507"
+          ]
+        },
         "tools": {
           "allow": [
-            "sessions_send",
-            "session_status",
-            "sessions_history"
+            "prospecting_main_run"
           ],
           "deny": [
+            "session_status",
             "sessions_list",
+            "sessions_history",
             "sessions_spawn",
+            "sessions_send",
+            "prospecting_session_reset",
+            "prospecting_main_next_action",
+            "prospecting_main_start",
+            "prospecting_main_continue",
+            "prospecting_prepare_request",
+            "prospecting_resolve_validated_json",
+            "prospecting_session_await_json",
+            "prospecting_session_await_validated_json",
+            "prospecting_contract_validate",
             "web_search",
+            "web_fetch",
             "linkedin_profile_fetch",
             "linkedin_company_fetch",
             "notion_recruiter_upsert",
@@ -150,6 +168,9 @@
             "notion_recruiter_mark_status",
             "notion_recruiter_schedule_next_action",
             "notion_recruiter_attach_cv",
+            "prospecting_crm_save_pending_shortlist",
+            "prospecting_crm_get_pending_shortlist",
+            "prospecting_crm_clear_pending_shortlist",
             "prospecting_state_get",
             "prospecting_state_update"
           ],
@@ -168,20 +189,35 @@
         }
       },
       {
-        "id": "research",
-        "workspace": "/project/config/agents/workspace-research",
+        "id": "sourcer",
+        "workspace": "/project/config/agents/workspace-sourcer",
         "tools": {
           "allow": [
-            "sessions_send",
             "web_search",
             "web_fetch"
           ],
           "deny": [
+            "sessions_send",
             "linkedin_profile_fetch",
             "linkedin_company_fetch",
             "session_status",
             "sessions_list",
             "sessions_history",
+            "prospecting_session_reset",
+            "prospecting_session_await_json",
+            "prospecting_session_await_validated_json",
+            "prospecting_main_run",
+            "prospecting_main_next_action",
+            "prospecting_main_start",
+            "prospecting_main_continue",
+            "prospecting_prepare_request",
+            "prospecting_contract_validate",
+            "prospecting_crm_get_campaign_state",
+            "prospecting_crm_register_accepted_lead",
+            "prospecting_crm_register_rejected_candidate",
+            "prospecting_crm_save_pending_shortlist",
+            "prospecting_crm_get_pending_shortlist",
+            "prospecting_crm_clear_pending_shortlist",
             "notion_recruiter_upsert",
             "notion_recruiter_get",
             "notion_recruiter_query_due_followups",
@@ -218,11 +254,37 @@
         }
       },
       {
-        "id": "crm",
-        "workspace": "/project/config/agents/workspace-crm",
+        "id": "qualifier",
+        "workspace": "/project/config/agents/workspace-qualifier",
         "tools": {
-          "allow": [
+          "allow": [],
+          "deny": [
+            "sessions_send",
             "session_status",
+            "sessions_list",
+            "sessions_history",
+            "sessions_spawn",
+            "sessions_yield",
+            "web_search",
+            "web_fetch",
+            "linkedin_profile_fetch",
+            "linkedin_company_fetch",
+            "linkedin_entity_enrich",
+            "prospecting_session_reset",
+            "prospecting_session_await_json",
+            "prospecting_session_await_validated_json",
+            "prospecting_main_run",
+            "prospecting_main_next_action",
+            "prospecting_main_start",
+            "prospecting_main_continue",
+            "prospecting_prepare_request",
+            "prospecting_contract_validate",
+            "prospecting_crm_get_campaign_state",
+            "prospecting_crm_register_accepted_lead",
+            "prospecting_crm_register_rejected_candidate",
+            "prospecting_crm_save_pending_shortlist",
+            "prospecting_crm_get_pending_shortlist",
+            "prospecting_crm_clear_pending_shortlist",
             "notion_recruiter_upsert",
             "notion_recruiter_get",
             "notion_recruiter_query_due_followups",
@@ -233,16 +295,83 @@
             "notion_recruiter_schedule_next_action",
             "notion_recruiter_attach_cv",
             "prospecting_state_get",
-            "prospecting_state_update"
+            "prospecting_state_update",
+            "canvas",
+            "nodes",
+            "cron",
+            "message",
+            "tts",
+            "gateway",
+            "agents_list",
+            "image",
+            "pdf",
+            "memory_search",
+            "memory_get",
+            "exec",
+            "process",
+            "read",
+            "write",
+            "edit",
+            "apply_patch",
+            "browser",
+            "subagents"
+          ],
+          "loopDetection": {
+            "enabled": true,
+            "historySize": 12,
+            "warningThreshold": 2,
+            "criticalThreshold": 3,
+            "globalCircuitBreakerThreshold": 4,
+            "detectors": {
+              "genericRepeat": true,
+              "knownPollNoProgress": true,
+              "pingPong": true
+            }
+          }
+        }
+      },
+      {
+        "id": "crm",
+        "workspace": "/project/config/agents/workspace-crm",
+        "tools": {
+          "allow": [
+            "prospecting_crm_get_campaign_state",
+            "prospecting_crm_register_accepted_lead",
+            "prospecting_crm_register_rejected_candidate",
+            "prospecting_crm_save_pending_shortlist",
+            "prospecting_crm_get_pending_shortlist",
+            "prospecting_crm_clear_pending_shortlist"
           ],
           "deny": [
+            "session_status",
             "linkedin_profile_fetch",
             "linkedin_company_fetch",
             "web_search",
+            "web_fetch",
             "sessions_list",
             "sessions_history",
             "sessions_send",
             "sessions_spawn",
+            "prospecting_session_reset",
+            "prospecting_session_await_json",
+            "prospecting_session_await_validated_json",
+            "prospecting_main_run",
+            "prospecting_main_next_action",
+            "prospecting_main_start",
+            "prospecting_main_continue",
+            "prospecting_prepare_request",
+            "prospecting_contract_validate",
+            "notion_recruiter_upsert",
+            "notion_recruiter_get",
+            "notion_recruiter_query_due_followups",
+            "notion_recruiter_save_research",
+            "notion_recruiter_save_drafts",
+            "notion_recruiter_log_touchpoint",
+            "notion_recruiter_mark_status",
+            "notion_recruiter_schedule_next_action",
+            "notion_recruiter_attach_cv",
+            "prospecting_state_get",
+            "prospecting_state_update",
             "exec",
             "process",
             "read",
@@ -273,7 +402,8 @@
       "enabled": true,
       "allow": [
         "main",
-        "research",
+        "sourcer",
+        "qualifier",
         "crm"
       ]
     },
