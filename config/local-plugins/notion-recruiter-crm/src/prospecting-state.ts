@@ -9,16 +9,22 @@ export interface ProspectingState {
 
 type UnknownRecord = Record<string, unknown>;
 
-const DATA_DIR =
-  process.env.NOTION_RECRUITER_CRM_DATA_DIR ||
-  "/home/openclaw/.openclaw/plugin-state/notion-recruiter-crm";
+function getDataDir(): string {
+  return (
+    process.env.NOTION_RECRUITER_CRM_DATA_DIR ||
+    (process.env.OPENCLAW_STATE_DIR
+      ? path.join(process.env.OPENCLAW_STATE_DIR, "plugin-state", "notion-recruiter-crm")
+      : undefined) ||
+    "/home/openclaw/.openclaw/plugin-state/notion-recruiter-crm"
+  );
+}
 
-const STATE_PATH =
-  process.env.PROSPECTING_STATE_PATH ||
-  path.join(DATA_DIR, "prospecting-state.json");
+function getStatePath(): string {
+  return process.env.PROSPECTING_STATE_PATH || path.join(getDataDir(), "prospecting-state.json");
+}
 
 function ensureDir(): void {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(getDataDir(), { recursive: true });
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -151,20 +157,22 @@ export function coerceProspectingState(input: unknown): ProspectingState {
 
 export function loadState(): ProspectingState {
   ensureDir();
+  const statePath = getStatePath();
 
-  if (!fs.existsSync(STATE_PATH)) {
+  if (!fs.existsSync(statePath)) {
     const initial = defaultState();
-    fs.writeFileSync(STATE_PATH, JSON.stringify(initial, null, 2), "utf8");
+    fs.writeFileSync(statePath, JSON.stringify(initial, null, 2), "utf8");
     return initial;
   }
 
-  const raw = fs.readFileSync(STATE_PATH, "utf8");
+  const raw = fs.readFileSync(statePath, "utf8");
   const parsed = JSON.parse(raw) as unknown;
   return coerceProspectingState(parsed);
 }
 
 export function saveState(state: ProspectingState): void {
   ensureDir();
+  const statePath = getStatePath();
 
   const normalized: ProspectingState = {
     searchedCompanyNames: normalizeNames(state.searchedCompanyNames),
@@ -175,7 +183,7 @@ export function saveState(state: ProspectingState): void {
         : new Date().toISOString(),
   };
 
-  const tempPath = `${STATE_PATH}.tmp`;
+  const tempPath = `${statePath}.tmp`;
   fs.writeFileSync(tempPath, JSON.stringify(normalized, null, 2), "utf8");
-  fs.renameSync(tempPath, STATE_PATH);
+  fs.renameSync(tempPath, statePath);
 }

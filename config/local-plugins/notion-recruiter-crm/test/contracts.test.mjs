@@ -41,8 +41,15 @@ async function runAsync(name, fn) {
 
 function withTempState(state, fn) {
   const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+  const previousDataDir = process.env.NOTION_RECRUITER_CRM_DATA_DIR;
+  const previousProspectingStatePath = process.env.PROSPECTING_STATE_PATH;
+  const previousPendingShortlistStatePath = process.env.PENDING_SHORTLIST_STATE_PATH;
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "prospecting-state-"));
+  const tempDataDir = path.join(tempRoot, "plugin-state", "notion-recruiter-crm");
   process.env.OPENCLAW_STATE_DIR = tempRoot;
+  process.env.NOTION_RECRUITER_CRM_DATA_DIR = tempDataDir;
+  process.env.PROSPECTING_STATE_PATH = path.join(tempDataDir, "prospecting-state.json");
+  process.env.PENDING_SHORTLIST_STATE_PATH = path.join(tempDataDir, "pending-shortlist-state.json");
 
   if (state) {
     saveState(state);
@@ -55,6 +62,24 @@ function withTempState(state, fn) {
       delete process.env.OPENCLAW_STATE_DIR;
     } else {
       process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
+
+    if (previousDataDir === undefined) {
+      delete process.env.NOTION_RECRUITER_CRM_DATA_DIR;
+    } else {
+      process.env.NOTION_RECRUITER_CRM_DATA_DIR = previousDataDir;
+    }
+
+    if (previousProspectingStatePath === undefined) {
+      delete process.env.PROSPECTING_STATE_PATH;
+    } else {
+      process.env.PROSPECTING_STATE_PATH = previousProspectingStatePath;
+    }
+
+    if (previousPendingShortlistStatePath === undefined) {
+      delete process.env.PENDING_SHORTLIST_STATE_PATH;
+    } else {
+      process.env.PENDING_SHORTLIST_STATE_PATH = previousPendingShortlistStatePath;
     }
   }
 }
@@ -690,6 +715,84 @@ run("rejects sourcer placeholder person names", () => {
   assert.equal(result.error, "CONTRACT_RULE_VIOLATION");
 });
 
+run("rejects sourcer dossiers when the named person is actually the company", () => {
+  const result = parseAndValidateProspectingContract(
+    "sourcer_response",
+    JSON.stringify({
+      status: "FOUND",
+      candidate: {
+        candidateId: "cand_123",
+        person: {
+          fullName: "Co.dx",
+          roleTitle: "CTO",
+          linkedinUrl: "https://www.linkedin.com/company/co-dx",
+        },
+        company: {
+          name: "Co.dx",
+          website: "https://codx.ai",
+          domain: "codx.ai",
+        },
+        fitSignals: ["Spain-based software company", "Company size is 11-50 employees"],
+        evidence: [
+          {
+            type: "company_profile",
+            url: "https://www.linkedin.com/company/co-dx",
+            claim: "Co.dx has 11-50 employees.",
+          },
+          {
+            type: "company_site",
+            url: "https://codx.ai",
+            claim: "Co.dx is an AI-powered platform built under TheMathCompany's product division.",
+          },
+        ],
+        notes: "Invalid dossier because the company was reused as the person.",
+      },
+    }),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "CONTRACT_RULE_VIOLATION");
+});
+
+run("rejects sourcer dossiers when evidence does not link the named person to the company", () => {
+  const result = parseAndValidateProspectingContract(
+    "sourcer_response",
+    JSON.stringify({
+      status: "FOUND",
+      candidate: {
+        candidateId: "cand_123",
+        person: {
+          fullName: "Javier Torremocha",
+          roleTitle: "Co-founder and Managing Partner",
+          linkedinUrl: null,
+        },
+        company: {
+          name: "Cactus",
+          website: "https://cactus-now.com",
+          domain: "cactus-now.com",
+        },
+        fitSignals: ["Spain-based software company", "Company size is 11-50 employees"],
+        evidence: [
+          {
+            type: "company_site",
+            url: "https://cactus-now.com/es/about-us/",
+            claim: "Cactus is a Spain-based AI software consultancy.",
+          },
+          {
+            type: "news_article",
+            url: "https://sifted.eu/articles/11-spanish-ai-startups-to-watch-according-to-investors",
+            claim: "Javier Torremocha is co-founder and managing partner at Kibo Ventures.",
+          },
+        ],
+        notes: "Mixed-entity dossier that should be rejected.",
+      },
+    }),
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "CONTRACT_RULE_VIOLATION");
+});
+
 run("rejects sourcer responses that match excluded company or lead aliases", () => {
   const result = parseAndValidateProspectingContract(
     "sourcer_response",
@@ -1233,7 +1336,7 @@ run("planner continues after sourcer NO_CANDIDATE instead of stopping immediatel
   assert.equal(afterNoCandidate.state.attemptIndex, 1);
 });
 
-run("planner moves close matches into shortlist save when search budget is exhausted", () => {
+run("planner routes close matches through commercial before shortlist save", () => {
   const result = planProspectingMainNextAction({
     state: {
       mode: "lead_search",
@@ -1309,8 +1412,8 @@ run("planner moves close matches into shortlist save when search budget is exhau
 
   assert.equal(result.ok, true);
   assert.equal(result.outcome, "send_request");
-  assert.equal(result.request.contract, "crm_request");
-  assert.equal(result.request.expectedAction, "SAVE_PENDING_SHORTLIST");
+  assert.equal(result.request.contract, "commercial_request");
+  assert.equal(result.request.expectedAction, "GENERATE_OUTREACH_PACK");
 });
 
 run("planner treats company aliases like 'Maisa' and 'Maisa AI' as duplicates", () => {
@@ -1848,6 +1951,366 @@ run("extracts nested worker JSON from the OpenClaw agent wrapper", () => {
     payloadText,
     '{"status":"OK","action":"GET_CAMPAIGN_STATE","campaignState":{"searchedCompanyNames":[],"registeredLeadNames":[]}}',
   );
+});
+
+const validOutreachPack = {
+  sourceNotes:
+    "Qualified lead for a small IT company in Spain with strong evidence for role, geography, and company profile.",
+  hook1: "Possible fit for agentic automation in internal operations.",
+  hook2: "Relevant technical buyer with a plausible internal automation angle.",
+  fitSummary:
+    "Strong lead for practical GenAI and agentic workflow work in a small IT environment with a named decision-maker.",
+  connectionNoteDraft:
+    "Hola Jaume, vi que en Unimedia combináis IA y desarrollo cloud. Diseño sistemas agentic para automatizar operaciones en pymes IT. Me gustaría conectar y compartirte una idea concreta.",
+  dmDraft:
+    "Hola Jaume.\n\nMe llamó la atención cómo estáis posicionando Unimedia en IA y software a medida. Suelo ayudar a empresas IT pequeñas a convertir tareas repetitivas en flujos agentic útiles para operaciones internas.\n\nSi te cuadra, te comparto una idea concreta que podría tener sentido en vuestro contexto.",
+  emailSubjectDraft: "automatización interna con genai",
+  emailBodyDraft:
+    "Hola Jaume. Vi que en Unimedia estáis trabajando en IA y desarrollo cloud para clientes, y pensé que quizá también os interese aplicarlo dentro del negocio. Estoy ayudando a equipos IT pequeños a montar sistemas agentic para automatizar trabajo operativo, acelerar workflows internos y reducir carga manual sin añadir una capa enorme de producto. Si te encaja, te comparto por aquí una idea concreta que sí podría tener sentido para una empresa como la vuestra. La idea sería totalmente aterrizada al tipo de equipo y servicio que ya estáis moviendo.",
+  nextActionType: "connection_request",
+};
+
+run("accepts a valid commercial request", () => {
+  const result = parseAndValidateProspectingContract(
+    "commercial_request",
+    JSON.stringify({
+      action: "GENERATE_OUTREACH_PACK",
+      runId: "run_commercial_001",
+      candidate: {
+        candidateId: "cand_123",
+        person: {
+          fullName: "Jaume Vidal",
+          roleTitle: "CEO & Founder",
+          linkedinUrl: "https://www.linkedin.com/in/jaume-vidal",
+        },
+        company: {
+          name: "Unimedia Technology",
+          website: "https://www.unimedia.tech",
+          domain: "unimedia.tech",
+        },
+        fitSignals: [
+          "Spain-based software consultancy",
+          "Company size is 10-49 employees",
+        ],
+        evidence: [
+          {
+            type: "company_site",
+            url: "https://www.unimedia.tech",
+            claim: "Unimedia Technology is based in Barcelona, Spain.",
+          },
+          {
+            type: "company_profile",
+            url: "https://clutch.co/profile/unimedia-technology",
+            claim: "Unimedia Technology has 10-49 employees.",
+          },
+        ],
+        notes: "Strong fit for internal automation work.",
+      },
+      qualification: {
+        status: "ACCEPT",
+        reasons: [
+          "Named founder",
+          "Spain-based company",
+          "Company size matches the requested range",
+        ],
+      },
+      channelRules: {
+        languageMode: "MATCH_LEAD_LANGUAGE",
+        connectionNote: {
+          maxChars: 200,
+          targetMinChars: 140,
+          targetMaxChars: 190,
+        },
+        dm: {
+          minChars: 320,
+          maxChars: 650,
+          paragraphCount: 3,
+        },
+        emailSubject: {
+          minWords: 2,
+          maxWords: 5,
+        },
+        emailBody: {
+          minWords: 70,
+          maxWords: 130,
+          minSentences: 3,
+          maxSentences: 5,
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.ok, true);
+});
+
+run("accepts a valid commercial READY response", () => {
+  const result = parseAndValidateProspectingContract(
+    "commercial_response",
+    JSON.stringify({
+      status: "READY",
+      candidateId: "cand_123",
+      outreachPack: validOutreachPack,
+    }),
+    {
+      expectedCandidateId: "cand_123",
+    },
+  );
+
+  assert.equal(result.ok, true);
+});
+
+run("accepts REGISTER_ACCEPTED_LEAD requests with outreachPack", () => {
+  const result = parseAndValidateProspectingContract(
+    "crm_request",
+    JSON.stringify({
+      action: "REGISTER_ACCEPTED_LEAD",
+      candidate: {
+        candidateId: "cand_123",
+        person: {
+          fullName: "Jaume Vidal",
+          roleTitle: "CEO & Founder",
+          linkedinUrl: "https://www.linkedin.com/in/jaume-vidal",
+        },
+        company: {
+          name: "Unimedia Technology",
+          website: "https://www.unimedia.tech",
+          domain: "unimedia.tech",
+        },
+        fitSignals: ["Spain-based consultancy"],
+        evidence: [
+          {
+            type: "company_site",
+            url: "https://www.unimedia.tech",
+            claim: "Barcelona, Spain.",
+          },
+          {
+            type: "company_profile",
+            url: "https://clutch.co/profile/unimedia-technology",
+            claim: "10-49 employees.",
+          },
+        ],
+        notes: "Strong fit",
+      },
+      decision: {
+        status: "ACCEPT",
+        reasons: ["Accepted by qualifier."],
+      },
+      outreachPack: validOutreachPack,
+      campaignStateUpdate: {
+        searchedCompanyNamesAdd: ["Unimedia Technology"],
+        registeredLeadNamesAdd: ["Jaume Vidal"],
+      },
+    }),
+  );
+
+  assert.equal(result.ok, true);
+});
+
+run("accepts SAVE_PENDING_SHORTLIST requests with outreachPack", () => {
+  const result = parseAndValidateProspectingContract(
+    "crm_request",
+    JSON.stringify({
+      action: "SAVE_PENDING_SHORTLIST",
+      pendingShortlist: {
+        originalRequestSummary: "lead en espana 5-50",
+        options: [
+          {
+            candidate: {
+              candidateId: "cand_123",
+              person: {
+                fullName: "Jaume Vidal",
+                roleTitle: "CEO & Founder",
+                linkedinUrl: "https://www.linkedin.com/in/jaume-vidal",
+              },
+              company: {
+                name: "Unimedia Technology",
+                website: "https://www.unimedia.tech",
+                domain: "unimedia.tech",
+              },
+              fitSignals: ["Spain-based consultancy"],
+              evidence: [
+                {
+                  type: "company_site",
+                  url: "https://www.unimedia.tech",
+                  claim: "Barcelona, Spain.",
+                },
+                {
+                  type: "company_profile",
+                  url: "https://clutch.co/profile/unimedia-technology",
+                  claim: "10-49 employees.",
+                },
+              ],
+              notes: "Strong fit",
+            },
+            summary: "Strong CEO lead with a slight size near miss.",
+            missedFilters: ["company size 5-50"],
+            reasons: ["Named founder", "Spain-based company"],
+            outreachPack: validOutreachPack,
+          },
+        ],
+      },
+    }),
+  );
+
+  assert.equal(result.ok, true);
+});
+
+run("planner routes accepted leads through commercial before CRM persistence", () => {
+  const result = planProspectingMainNextAction({
+    state: {
+      mode: "lead_search",
+      language: "es",
+      requestId: "lead_commercial_accept",
+      originalRequestSummary: "lead en espana 5-50",
+      requestedLeadCount: 1,
+      targetFilters: {
+        preferredCountry: "es",
+        preferredMinCompanySize: 5,
+        preferredMaxCompanySize: 50,
+        preferredRoleThemes: ["ceo"],
+        preferNamedPerson: true,
+      },
+      sourcerTargetThemes: ["ceo", "software company", "Spain"],
+      attemptBudget: 4,
+      attemptIndex: 0,
+      acceptedLeads: [],
+      shortlistOptions: [],
+      seenCompanies: [],
+      seenLeadNames: [],
+      currentCandidate: {
+        candidateId: "cand_123",
+        person: {
+          fullName: "Jaume Vidal",
+          roleTitle: "CEO & Founder",
+          linkedinUrl: null,
+        },
+        company: {
+          name: "Unimedia Technology",
+          website: "https://www.unimedia.tech",
+          domain: "unimedia.tech",
+        },
+        fitSignals: ["Spain-based consultancy"],
+        evidence: [
+          {
+            type: "company_site",
+            url: "https://www.unimedia.tech",
+            claim: "Barcelona, Spain.",
+          },
+          {
+            type: "company_profile",
+            url: "https://clutch.co/profile/unimedia-technology",
+            claim: "10-49 employees.",
+          },
+        ],
+        notes: "Strong fit",
+      },
+      currentQualificationReasons: [],
+      currentCloseMatch: null,
+      currentOutreachPack: null,
+      currentMatchMode: "STRICT",
+      enrichRoundCount: 0,
+      awaitingAction: "QUALIFY_ONE",
+    },
+    latestResult: {
+      contract: "qualifier_response",
+      ok: true,
+      status: "VALID",
+      parsed: {
+        status: "ACCEPT",
+        candidateId: "cand_123",
+        decision: {
+          verdict: "ACCEPT",
+          reasons: ["Named founder", "Exact fit"],
+          missingFields: [],
+        },
+      },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.outcome, "send_request");
+  assert.equal(result.request.contract, "commercial_request");
+  assert.equal(result.request.expectedAction, "GENERATE_OUTREACH_PACK");
+});
+
+run("planner falls back to CRM persistence when commercial fails for an accepted lead", () => {
+  const result = planProspectingMainNextAction({
+    state: {
+      mode: "lead_search",
+      language: "es",
+      requestId: "lead_commercial_fallback",
+      originalRequestSummary: "lead en espana 5-50",
+      requestedLeadCount: 1,
+      targetFilters: {
+        preferredCountry: "es",
+        preferredMinCompanySize: 5,
+        preferredMaxCompanySize: 50,
+        preferredRoleThemes: ["ceo"],
+        preferNamedPerson: true,
+      },
+      sourcerTargetThemes: ["ceo", "software company", "Spain"],
+      attemptBudget: 4,
+      attemptIndex: 0,
+      acceptedLeads: [],
+      shortlistOptions: [],
+      seenCompanies: [],
+      seenLeadNames: [],
+      currentCandidate: {
+        candidateId: "cand_123",
+        person: {
+          fullName: "Jaume Vidal",
+          roleTitle: "CEO & Founder",
+          linkedinUrl: null,
+        },
+        company: {
+          name: "Unimedia Technology",
+          website: "https://www.unimedia.tech",
+          domain: "unimedia.tech",
+        },
+        fitSignals: ["Spain-based consultancy"],
+        evidence: [
+          {
+            type: "company_site",
+            url: "https://www.unimedia.tech",
+            claim: "Barcelona, Spain.",
+          },
+          {
+            type: "company_profile",
+            url: "https://clutch.co/profile/unimedia-technology",
+            claim: "10-49 employees.",
+          },
+        ],
+        notes: "Strong fit",
+      },
+      currentQualificationReasons: ["Named founder", "Exact fit"],
+      currentCloseMatch: null,
+      currentOutreachPack: null,
+      currentMatchMode: "STRICT",
+      enrichRoundCount: 0,
+      awaitingAction: "GENERATE_OUTREACH_PACK",
+    },
+    latestResult: {
+      contract: "commercial_response",
+      ok: false,
+      status: "TIMEOUT",
+      error: "Commercial worker stalled.",
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.outcome, "send_request");
+  assert.equal(result.request.contract, "crm_request");
+  assert.equal(result.request.expectedAction, "REGISTER_ACCEPTED_LEAD");
+  assert.equal(typeof result.request.payload.outreachPack?.connectionNoteDraft, "string");
+  assert.equal(
+    result.request.payload.outreachPack.connectionNoteDraft.length <= 200,
+    true,
+  );
+  const emailWordCount = result.request.payload.outreachPack.emailBodyDraft
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+  assert.equal(emailWordCount >= 70 && emailWordCount <= 130, true);
 });
 
 run("reads the matched request payload back from the session store", () => {

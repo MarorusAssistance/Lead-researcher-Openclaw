@@ -13,6 +13,17 @@ export interface PendingShortlistOption {
   summary: string;
   missedFilters: string[];
   reasons: string[];
+  outreachPack?: {
+    sourceNotes: string;
+    hook1: string;
+    hook2: string;
+    fitSummary: string;
+    connectionNoteDraft: string;
+    dmDraft: string;
+    emailSubjectDraft: string;
+    emailBodyDraft: string;
+    nextActionType: "connection_request";
+  };
 }
 
 export interface PendingShortlist {
@@ -30,16 +41,25 @@ interface PendingShortlistState {
 
 type UnknownRecord = Record<string, unknown>;
 
-const DATA_DIR =
-  process.env.NOTION_RECRUITER_CRM_DATA_DIR ||
-  "/home/openclaw/.openclaw/plugin-state/notion-recruiter-crm";
+function getDataDir(): string {
+  return (
+    process.env.NOTION_RECRUITER_CRM_DATA_DIR ||
+    (process.env.OPENCLAW_STATE_DIR
+      ? path.join(process.env.OPENCLAW_STATE_DIR, "plugin-state", "notion-recruiter-crm")
+      : undefined) ||
+    "/home/openclaw/.openclaw/plugin-state/notion-recruiter-crm"
+  );
+}
 
-const SHORTLIST_STATE_PATH =
-  process.env.PENDING_SHORTLIST_STATE_PATH ||
-  path.join(DATA_DIR, "pending-shortlist-state.json");
+function getShortlistStatePath(): string {
+  return (
+    process.env.PENDING_SHORTLIST_STATE_PATH ||
+    path.join(getDataDir(), "pending-shortlist-state.json")
+  );
+}
 
 function ensureDir(): void {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(getDataDir(), { recursive: true });
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -78,11 +98,56 @@ function coercePendingShortlistOption(input: unknown): PendingShortlistOption {
     throw new Error("Pending shortlist option reasons must be a non-empty string array.");
   }
 
+  let outreachPack: PendingShortlistOption["outreachPack"];
+  if (input.outreachPack !== undefined) {
+    if (!isRecord(input.outreachPack)) {
+      throw new Error("Pending shortlist option outreachPack must be an object.");
+    }
+    const rawOutreachPack = input.outreachPack;
+
+    const requiredKeys = [
+      "sourceNotes",
+      "hook1",
+      "hook2",
+      "fitSummary",
+      "connectionNoteDraft",
+      "dmDraft",
+      "emailSubjectDraft",
+      "emailBodyDraft",
+    ] as const;
+
+    for (const key of requiredKeys) {
+      const value = rawOutreachPack[key];
+      if (typeof value !== "string" || value.trim().length === 0) {
+        throw new Error(`Pending shortlist option outreachPack.${key} must be a non-empty string.`);
+      }
+    }
+
+    if (rawOutreachPack.nextActionType !== "connection_request") {
+      throw new Error(
+        "Pending shortlist option outreachPack.nextActionType must be connection_request.",
+      );
+    }
+
+    outreachPack = {
+      sourceNotes: (rawOutreachPack.sourceNotes as string).trim(),
+      hook1: (rawOutreachPack.hook1 as string).trim(),
+      hook2: (rawOutreachPack.hook2 as string).trim(),
+      fitSummary: (rawOutreachPack.fitSummary as string).trim(),
+      connectionNoteDraft: (rawOutreachPack.connectionNoteDraft as string).trim(),
+      dmDraft: (rawOutreachPack.dmDraft as string).trim(),
+      emailSubjectDraft: (rawOutreachPack.emailSubjectDraft as string).trim(),
+      emailBodyDraft: (rawOutreachPack.emailBodyDraft as string).trim(),
+      nextActionType: "connection_request",
+    };
+  }
+
   return {
     candidate: input.candidate as PendingShortlistOption["candidate"],
     summary: input.summary.trim(),
     missedFilters: input.missedFilters.map((value) => value.trim()).filter(Boolean),
     reasons: input.reasons.map((value) => value.trim()).filter(Boolean),
+    outreachPack,
   };
 }
 
@@ -150,22 +215,24 @@ function coerceState(input: unknown): PendingShortlistState {
 
 function readState(): PendingShortlistState {
   ensureDir();
+  const shortlistStatePath = getShortlistStatePath();
 
-  if (!fs.existsSync(SHORTLIST_STATE_PATH)) {
+  if (!fs.existsSync(shortlistStatePath)) {
     const initial = defaultState();
-    fs.writeFileSync(SHORTLIST_STATE_PATH, JSON.stringify(initial, null, 2), "utf8");
+    fs.writeFileSync(shortlistStatePath, JSON.stringify(initial, null, 2), "utf8");
     return initial;
   }
 
-  const raw = fs.readFileSync(SHORTLIST_STATE_PATH, "utf8");
+  const raw = fs.readFileSync(shortlistStatePath, "utf8");
   return coerceState(JSON.parse(raw) as unknown);
 }
 
 function writeState(state: PendingShortlistState): void {
   ensureDir();
-  const tempPath = `${SHORTLIST_STATE_PATH}.tmp`;
+  const shortlistStatePath = getShortlistStatePath();
+  const tempPath = `${shortlistStatePath}.tmp`;
   fs.writeFileSync(tempPath, JSON.stringify(state, null, 2), "utf8");
-  fs.renameSync(tempPath, SHORTLIST_STATE_PATH);
+  fs.renameSync(tempPath, shortlistStatePath);
 }
 
 export function loadPendingShortlist(): PendingShortlist | null {

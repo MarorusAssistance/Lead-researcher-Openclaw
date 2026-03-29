@@ -60,7 +60,6 @@ export const UpsertRecruiterSchema = Type.Object(
     dmDraft: Type.Optional(NullableStringSchema),
     emailSubjectDraft: Type.Optional(NullableStringSchema),
     emailBodyDraft: Type.Optional(NullableStringSchema),
-    mailDraft: Type.Optional(NullableStringSchema),
     followup1Draft: Type.Optional(NullableStringSchema),
     followup2Draft: Type.Optional(NullableStringSchema),
     lastReplySummary: Type.Optional(NullableStringSchema),
@@ -111,7 +110,6 @@ export const SaveDraftsSchema = Type.Object(
     dmDraft: Type.Optional(Type.String()),
     emailSubjectDraft: Type.Optional(Type.String()),
     emailBodyDraft: Type.Optional(Type.String()),
-    mailDraft: Type.Optional(Type.String()),
     followup1Draft: Type.Optional(Type.String()),
     followup2Draft: Type.Optional(Type.String()),
   },
@@ -183,7 +181,6 @@ export const PROPERTY_NAMES = {
   dmDraft: "DM Draft",
   emailSubjectDraft: "Email Subject Draft",
   emailBodyDraft: "Email Body Draft",
-  mailDraft: "Mail Draft",
   followup1Draft: "Follow Up 1 Draft",
   followup2Draft: "Follow Up 2 Draft",
   lastReplySummary: "Last Reply Summary",
@@ -282,10 +279,6 @@ export const RECRUITER_PROPERTY_SPECS = {
   },
   emailBodyDraft: {
     notionName: PROPERTY_NAMES.emailBodyDraft,
-    allowedTypes: ["rich_text"],
-  },
-  mailDraft: {
-    notionName: PROPERTY_NAMES.mailDraft,
     allowedTypes: ["rich_text"],
   },
   followup1Draft: {
@@ -402,7 +395,6 @@ export type RecruiterPropertyValues = {
   dmDraft?: string | null;
   emailSubjectDraft?: string | null;
   emailBodyDraft?: string | null;
-  mailDraft?: string | null;
   followup1Draft?: string | null;
   followup2Draft?: string | null;
   lastReplySummary?: string | null;
@@ -435,7 +427,6 @@ export type RecruiterRecord = {
   dmDraft: string | null;
   emailSubjectDraft: string | null;
   emailBodyDraft: string | null;
-  mailDraft: string | null;
   followup1Draft: string | null;
   followup2Draft: string | null;
   lastReplySummary: string | null;

@@ -130,11 +130,7 @@
         "id": "main",
         "workspace": "/project/config/agents/workspace",
         "model": {
-          "primary": "openai/gpt-4.1-mini",
-          "fallbacks": [
-            "openai/gpt-4o-mini",
-            "lmstudio/qwen/qwen3-30b-a3b-2507"
-          ]
+          "primary": "lmstudio/qwen/qwen3-30b-a3b-2507"
         },
         "tools": {
           "allow": [
@@ -211,6 +207,7 @@
             "prospecting_main_start",
             "prospecting_main_continue",
             "prospecting_prepare_request",
+            "prospecting_resolve_validated_json",
             "prospecting_contract_validate",
             "prospecting_crm_get_campaign_state",
             "prospecting_crm_register_accepted_lead",
@@ -278,6 +275,7 @@
             "prospecting_main_start",
             "prospecting_main_continue",
             "prospecting_prepare_request",
+            "prospecting_resolve_validated_json",
             "prospecting_contract_validate",
             "prospecting_crm_get_campaign_state",
             "prospecting_crm_register_accepted_lead",
@@ -360,6 +358,7 @@
             "prospecting_main_start",
             "prospecting_main_continue",
             "prospecting_prepare_request",
+            "prospecting_resolve_validated_json",
             "prospecting_contract_validate",
             "notion_recruiter_upsert",
             "notion_recruiter_get",
@@ -394,6 +393,84 @@
             }
           }
         }
+      },
+      {
+        "id": "commercial",
+        "workspace": "/project/config/agents/workspace-commercial",
+        "tools": {
+          "allow": [],
+          "deny": [
+            "sessions_send",
+            "session_status",
+            "sessions_list",
+            "sessions_history",
+            "sessions_spawn",
+            "sessions_yield",
+            "web_search",
+            "web_fetch",
+            "linkedin_profile_fetch",
+            "linkedin_company_fetch",
+            "linkedin_entity_enrich",
+            "prospecting_session_reset",
+            "prospecting_session_await_json",
+            "prospecting_session_await_validated_json",
+            "prospecting_main_run",
+            "prospecting_main_next_action",
+            "prospecting_main_start",
+            "prospecting_main_continue",
+            "prospecting_prepare_request",
+            "prospecting_resolve_validated_json",
+            "prospecting_contract_validate",
+            "prospecting_crm_get_campaign_state",
+            "prospecting_crm_register_accepted_lead",
+            "prospecting_crm_register_rejected_candidate",
+            "prospecting_crm_save_pending_shortlist",
+            "prospecting_crm_get_pending_shortlist",
+            "prospecting_crm_clear_pending_shortlist",
+            "notion_recruiter_upsert",
+            "notion_recruiter_get",
+            "notion_recruiter_query_due_followups",
+            "notion_recruiter_save_research",
+            "notion_recruiter_save_drafts",
+            "notion_recruiter_log_touchpoint",
+            "notion_recruiter_mark_status",
+            "notion_recruiter_schedule_next_action",
+            "notion_recruiter_attach_cv",
+            "prospecting_state_get",
+            "prospecting_state_update",
+            "canvas",
+            "nodes",
+            "cron",
+            "message",
+            "tts",
+            "gateway",
+            "agents_list",
+            "image",
+            "pdf",
+            "memory_search",
+            "memory_get",
+            "exec",
+            "process",
+            "read",
+            "write",
+            "edit",
+            "apply_patch",
+            "browser",
+            "subagents"
+          ],
+          "loopDetection": {
+            "enabled": true,
+            "historySize": 12,
+            "warningThreshold": 2,
+            "criticalThreshold": 3,
+            "globalCircuitBreakerThreshold": 4,
+            "detectors": {
+              "genericRepeat": true,
+              "knownPollNoProgress": true,
+              "pingPong": true
+            }
+          }
+        }
       }
     ]
   },
@@ -404,7 +481,8 @@
         "main",
         "sourcer",
         "qualifier",
-        "crm"
+        "crm",
+        "commercial"
       ]
     },
     "sessions": {

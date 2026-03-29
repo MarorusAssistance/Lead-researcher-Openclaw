@@ -9,6 +9,8 @@ export const ProspectingContractSchema = Type.Union([
   Type.Literal("sourcer_response"),
   Type.Literal("qualifier_request"),
   Type.Literal("qualifier_response"),
+  Type.Literal("commercial_request"),
+  Type.Literal("commercial_response"),
   Type.Literal("crm_request"),
   Type.Literal("crm_response"),
 ]);
@@ -282,6 +284,107 @@ export const QualifierRequestSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const OutreachPackSchema = Type.Object(
+  {
+    sourceNotes: Type.String({ minLength: 1 }),
+    hook1: Type.String({ minLength: 1 }),
+    hook2: Type.String({ minLength: 1 }),
+    fitSummary: Type.String({ minLength: 1 }),
+    connectionNoteDraft: Type.String({ minLength: 1 }),
+    dmDraft: Type.String({ minLength: 1 }),
+    emailSubjectDraft: Type.String({ minLength: 1 }),
+    emailBodyDraft: Type.String({ minLength: 1 }),
+    nextActionType: Type.Literal("connection_request"),
+  },
+  { additionalProperties: false },
+);
+
+export const CommercialQualificationSchema = Type.Object(
+  {
+    status: Type.Union([Type.Literal("ACCEPT"), Type.Literal("REJECT")]),
+    reasons: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+    closeMatch: Type.Optional(CloseMatchSchema),
+  },
+  { additionalProperties: false },
+);
+
+export const CommercialChannelRulesSchema = Type.Object(
+  {
+    languageMode: Type.Union([
+      Type.Literal("MATCH_LEAD_LANGUAGE"),
+      Type.Literal("FORCE_ES"),
+      Type.Literal("FORCE_EN"),
+    ]),
+    connectionNote: Type.Object(
+      {
+        maxChars: Type.Integer({ minimum: 1 }),
+        targetMinChars: Type.Integer({ minimum: 1 }),
+        targetMaxChars: Type.Integer({ minimum: 1 }),
+      },
+      { additionalProperties: false },
+    ),
+    dm: Type.Object(
+      {
+        minChars: Type.Integer({ minimum: 1 }),
+        maxChars: Type.Integer({ minimum: 1 }),
+        paragraphCount: Type.Integer({ minimum: 1 }),
+      },
+      { additionalProperties: false },
+    ),
+    emailSubject: Type.Object(
+      {
+        minWords: Type.Integer({ minimum: 1 }),
+        maxWords: Type.Integer({ minimum: 1 }),
+      },
+      { additionalProperties: false },
+    ),
+    emailBody: Type.Object(
+      {
+        minWords: Type.Integer({ minimum: 1 }),
+        maxWords: Type.Integer({ minimum: 1 }),
+        minSentences: Type.Integer({ minimum: 1 }),
+        maxSentences: Type.Integer({ minimum: 1 }),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const CommercialRequestSchema = Type.Object(
+  {
+    action: Type.Literal("GENERATE_OUTREACH_PACK"),
+    runId: Type.String({ minLength: 1 }),
+    candidate: CandidateSchema,
+    qualification: CommercialQualificationSchema,
+    channelRules: CommercialChannelRulesSchema,
+  },
+  { additionalProperties: false },
+);
+
+export const CommercialReadyResponseSchema = Type.Object(
+  {
+    status: Type.Literal("READY"),
+    candidateId: Type.String({ minLength: 1 }),
+    outreachPack: OutreachPackSchema,
+  },
+  { additionalProperties: false },
+);
+
+export const CommercialErrorResponseSchema = Type.Object(
+  {
+    status: Type.Literal("ERROR"),
+    candidateId: Type.String({ minLength: 1 }),
+    error: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
+export const CommercialResponseSchema = Type.Union([
+  CommercialReadyResponseSchema,
+  CommercialErrorResponseSchema,
+]);
+
 export const CampaignStateSchema = Type.Object(
   {
     searchedCompanyNames: StringArraySchema,
@@ -296,6 +399,7 @@ export const PendingShortlistOptionSchema = Type.Object(
     summary: Type.String({ minLength: 1 }),
     missedFilters: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
     reasons: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+    outreachPack: Type.Optional(OutreachPackSchema),
   },
   { additionalProperties: false },
 );
@@ -410,6 +514,7 @@ export const CrmRegisterAcceptedLeadRequestSchema = Type.Object(
     runId: Type.Optional(Type.String({ minLength: 1 })),
     candidate: CandidateSchema,
     decision: AcceptedLeadDecisionSchema,
+    outreachPack: Type.Optional(OutreachPackSchema),
     campaignStateUpdate: CampaignStateUpdateSchema,
   },
   { additionalProperties: false },
@@ -568,6 +673,62 @@ function companyMatchKeys(input: string): string[] {
   return [...new Set([strict, loose].filter((value) => value.length > 0))];
 }
 
+function personLooksLikeCompanyName(personName: string, companyName: string): boolean {
+  const normalizedPerson = normalizeLookupName(personName);
+  if (normalizedPerson.length === 0) {
+    return false;
+  }
+
+  return companyMatchKeys(companyName).some((value) => value === normalizedPerson);
+}
+
+function normalizeDomainForMatch(input: string): string {
+  return input.trim().toLowerCase().replace(/^www\./, "");
+}
+
+function extractHostnameForMatch(url: string): string | null {
+  try {
+    return normalizeDomainForMatch(new URL(url).hostname);
+  } catch {
+    return null;
+  }
+}
+
+function personEvidenceTokens(fullName: string): string[] {
+  const normalized = normalizeLookupName(fullName);
+  const parts = normalized.split(" ").filter((part) => part.length >= 3);
+  const lastName = parts.length > 1 ? parts[parts.length - 1] : null;
+  return [...new Set([normalized, lastName, ...parts].filter((value): value is string => Boolean(value)))];
+}
+
+function evidenceLinksNamedPersonToCompany(
+  evidence: Array<{ claim: string; url: string }>,
+  fullName: string,
+  companyName: string,
+  companyDomain: string | null,
+): boolean {
+  const personTokens = personEvidenceTokens(fullName);
+  const companyKeys = companyMatchKeys(companyName).filter((value) => value.length >= 3);
+  const normalizedDomain = companyDomain ? normalizeDomainForMatch(companyDomain) : null;
+
+  return evidence.some((item) => {
+    const claim = normalizeLookupName(item.claim);
+    const host = extractHostnameForMatch(item.url);
+    const mentionsPerson = personTokens.some((token) => claim.includes(token));
+    if (!mentionsPerson) {
+      return false;
+    }
+
+    const mentionsCompany = companyKeys.some((key) => claim.includes(key));
+    const onCompanyDomain =
+      normalizedDomain !== null &&
+      host !== null &&
+      (host === normalizedDomain || host.endsWith(`.${normalizedDomain}`));
+
+    return mentionsCompany || onCompanyDomain;
+  });
+}
+
 function contextIssues(context: ProspectingValidationContext): string[] {
   const issues: string[] = [];
 
@@ -616,6 +777,23 @@ function validateSourcerResponse(
     }
 
     if (
+      parsed.candidate.person.fullName !== null &&
+      personLooksLikeCompanyName(
+        parsed.candidate.person.fullName,
+        parsed.candidate.company.name,
+      )
+    ) {
+      issues.push("person.fullName cannot be the same as company.name.");
+    }
+
+    if (
+      parsed.candidate.person.linkedinUrl !== null &&
+      /linkedin\.com\/company\//i.test(parsed.candidate.person.linkedinUrl)
+    ) {
+      issues.push("person.linkedinUrl cannot point to a LinkedIn company page.");
+    }
+
+    if (
       context.expectedCandidateId !== undefined &&
       parsed.candidate.candidateId !== context.expectedCandidateId
     ) {
@@ -641,6 +819,18 @@ function validateSourcerResponse(
       excludedLeadNames.has(normalizeLookupName(parsed.candidate.person.fullName))
     ) {
       issues.push("candidate.person.fullName matches an excluded lead.");
+    }
+
+    if (
+      parsed.candidate.person.fullName !== null &&
+      !evidenceLinksNamedPersonToCompany(
+        parsed.candidate.evidence,
+        parsed.candidate.person.fullName,
+        parsed.candidate.company.name,
+        parsed.candidate.company.domain,
+      )
+    ) {
+      issues.push("candidate evidence must link the named person to the target company.");
     }
   }
 
@@ -774,6 +964,117 @@ function validateQualifierRequest(payload: unknown): ProspectingValidationResult
   };
 }
 
+function validateCommercialResponse(
+  payload: unknown,
+  context: ProspectingValidationContext,
+): ProspectingValidationResult {
+  const schemaResult = validateWithSchema("commercial_response", CommercialResponseSchema, payload);
+  if (schemaResult) {
+    return schemaResult;
+  }
+
+  const parsed = payload as Static<typeof CommercialResponseSchema>;
+  const issues: string[] = [];
+
+  if (context.expectedCandidateId && parsed.candidateId !== context.expectedCandidateId) {
+    issues.push("candidateId does not match the current candidate.");
+  }
+
+  if (parsed.status === "READY") {
+    const connectChars = parsed.outreachPack.connectionNoteDraft.length;
+    const emailWordCount = parsed.outreachPack.emailBodyDraft.trim().split(/\s+/).filter(Boolean).length;
+    const emailSentenceCount = parsed.outreachPack.emailBodyDraft
+      .split(/[.!?]+/)
+      .map((value) => value.trim())
+      .filter(Boolean).length;
+    const subjectWordCount = parsed.outreachPack.emailSubjectDraft.trim().split(/\s+/).filter(Boolean).length;
+
+    if (connectChars > 200) {
+      issues.push("connectionNoteDraft must be 200 characters or fewer.");
+    }
+
+    if (subjectWordCount < 2 || subjectWordCount > 5) {
+      issues.push("emailSubjectDraft must be between 2 and 5 words.");
+    }
+
+    if (emailWordCount < 70 || emailWordCount > 130) {
+      issues.push("emailBodyDraft must be between 70 and 130 words.");
+    }
+
+    if (emailSentenceCount < 3 || emailSentenceCount > 5) {
+      issues.push("emailBodyDraft must contain between 3 and 5 sentences.");
+    }
+  }
+
+  if (issues.length > 0) {
+    return invalid("commercial_response", "CONTRACT_RULE_VIOLATION", issues);
+  }
+
+  return {
+    ok: true,
+    contract: "commercial_response",
+    parsed,
+  };
+}
+
+function validateCommercialRequest(payload: unknown): ProspectingValidationResult {
+  const schemaResult = validateWithSchema("commercial_request", CommercialRequestSchema, payload);
+  if (schemaResult) {
+    return schemaResult;
+  }
+
+  const parsed = payload as Static<typeof CommercialRequestSchema>;
+  const issues: string[] = [];
+
+  if (
+    parsed.qualification.status === "ACCEPT" &&
+    parsed.qualification.closeMatch !== undefined
+  ) {
+    issues.push("qualification.closeMatch is only valid when status is REJECT.");
+  }
+
+  if (
+    parsed.channelRules.connectionNote.targetMinChars >
+    parsed.channelRules.connectionNote.targetMaxChars
+  ) {
+    issues.push("connectionNote targetMinChars cannot be greater than targetMaxChars.");
+  }
+
+  if (
+    parsed.channelRules.connectionNote.targetMaxChars > parsed.channelRules.connectionNote.maxChars
+  ) {
+    issues.push("connectionNote targetMaxChars cannot be greater than maxChars.");
+  }
+
+  if (parsed.channelRules.dm.minChars > parsed.channelRules.dm.maxChars) {
+    issues.push("dm minChars cannot be greater than maxChars.");
+  }
+
+  if (parsed.channelRules.emailSubject.minWords > parsed.channelRules.emailSubject.maxWords) {
+    issues.push("emailSubject minWords cannot be greater than maxWords.");
+  }
+
+  if (parsed.channelRules.emailBody.minWords > parsed.channelRules.emailBody.maxWords) {
+    issues.push("emailBody minWords cannot be greater than maxWords.");
+  }
+
+  if (
+    parsed.channelRules.emailBody.minSentences > parsed.channelRules.emailBody.maxSentences
+  ) {
+    issues.push("emailBody minSentences cannot be greater than maxSentences.");
+  }
+
+  if (issues.length > 0) {
+    return invalid("commercial_request", "CONTRACT_RULE_VIOLATION", issues);
+  }
+
+  return {
+    ok: true,
+    contract: "commercial_request",
+    parsed,
+  };
+}
+
 function validateCrmResponse(
   payload: unknown,
   context: ProspectingValidationContext,
@@ -860,6 +1161,10 @@ export function validateProspectingContract(
       return validateQualifierRequest(payload);
     case "qualifier_response":
       return validateQualifierResponse(payload, context);
+    case "commercial_request":
+      return validateCommercialRequest(payload);
+    case "commercial_response":
+      return validateCommercialResponse(payload, context);
     case "crm_request":
       return validateCrmRequest(payload);
     case "crm_response":
