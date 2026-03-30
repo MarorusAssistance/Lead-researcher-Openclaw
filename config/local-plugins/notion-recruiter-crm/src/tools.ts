@@ -68,6 +68,7 @@ import {
   readRunScopedToolTrace,
   resetAgentSession,
   type AwaitSessionJsonInput,
+  type RunScopedToolTrace,
 } from "./session-await.js";
 
 const execFileAsync = promisify(execFile);
@@ -89,6 +90,18 @@ const HARD_MISS_RESET_THRESHOLD = 6;
 const SOURCER_VISITED_URL_HINT_LIMIT = 200;
 const SOURCER_VISITED_HOST_HINT_LIMIT = 20;
 const SOURCER_OVERUSED_QUERY_HINT_LIMIT = 20;
+const SOURCER_OVERUSED_QUERY_MIN_COUNT = 2;
+const SOURCER_PREFERRED_QUERY_LIMIT = 10;
+const SOURCER_BANNED_QUERY_LIMIT = 10;
+const SOURCER_SEED_TARGET_LIMIT = 5;
+const SOURCER_SEED_PROFILE_SCAN_LIMIT = 18;
+const SOURCER_SEED_FETCH_TIMEOUT_MS = 15000;
+const SOURCER_SEED_DIRECTORY_URLS = [
+  "https://clutch.co/es/developers",
+  "https://clutch.co/es/it-services",
+  "https://clutch.co/es/developers?page=2",
+  "https://clutch.co/es/it-services?page=2",
+];
 
 function parsePluginConfig(pluginConfig: unknown): PluginConfig {
   if (Value.Check(PluginConfigSchema, pluginConfig)) {
@@ -1018,6 +1031,9 @@ function canonicalizeSourcerRequest(payload: Record<string, unknown>): Record<st
     const rawVisitedHosts = Array.isArray(rawExplorationHints.visitedHosts)
       ? rawExplorationHints.visitedHosts
       : [];
+    const rawSearchGuidance = isPlainRecord(rawCampaignContext.searchGuidance)
+      ? rawCampaignContext.searchGuidance
+      : {};
     const overusedQueries: Array<{ query: string; count: number }> = [];
     const seenOverusedQueries = new Set<string>();
 
@@ -1056,6 +1072,10 @@ function canonicalizeSourcerRequest(payload: Record<string, unknown>): Record<st
     ).slice(0, SOURCER_VISITED_URL_HINT_LIMIT);
     const visitedHosts: Array<{ host: string; count: number }> = [];
     const seenVisitedHosts = new Set<string>();
+    const preferredQueries: string[] = [];
+    const bannedQueries: string[] = [];
+    const seenPreferredQueries = new Set<string>();
+    const seenBannedQueries = new Set<string>();
 
     for (const value of rawVisitedHosts) {
       if (!isPlainRecord(value)) {
@@ -1074,6 +1094,34 @@ function canonicalizeSourcerRequest(payload: Record<string, unknown>): Record<st
       });
 
       if (visitedHosts.length >= SOURCER_VISITED_HOST_HINT_LIMIT) {
+        break;
+      }
+    }
+
+    for (const value of asNonEmptyTrimmedStringArray(rawSearchGuidance.preferredQueries) ?? []) {
+      const normalized = normalizeTrackedQuery(value);
+      if (!normalized || seenPreferredQueries.has(normalized)) {
+        continue;
+      }
+
+      seenPreferredQueries.add(normalized);
+      preferredQueries.push(value.trim());
+
+      if (preferredQueries.length >= SOURCER_PREFERRED_QUERY_LIMIT) {
+        break;
+      }
+    }
+
+    for (const value of asNonEmptyTrimmedStringArray(rawSearchGuidance.bannedQueries) ?? []) {
+      const normalized = normalizeTrackedQuery(value);
+      if (!normalized || seenBannedQueries.has(normalized)) {
+        continue;
+      }
+
+      seenBannedQueries.add(normalized);
+      bannedQueries.push(value.trim());
+
+      if (bannedQueries.length >= SOURCER_BANNED_QUERY_LIMIT) {
         break;
       }
     }
@@ -1116,6 +1164,14 @@ function canonicalizeSourcerRequest(payload: Record<string, unknown>): Record<st
                 ...(overusedQueries.length > 0 ? { overusedQueries } : {}),
                 ...(visitedUrls.length > 0 ? { visitedUrls } : {}),
                 ...(visitedHosts.length > 0 ? { visitedHosts } : {}),
+              },
+            }
+          : {}),
+        ...(preferredQueries.length > 0 || bannedQueries.length > 0
+          ? {
+              searchGuidance: {
+                ...(preferredQueries.length > 0 ? { preferredQueries } : {}),
+                ...(bannedQueries.length > 0 ? { bannedQueries } : {}),
               },
             }
           : {}),
@@ -1532,6 +1588,11 @@ type MainExplorationHints = {
   consecutiveHardMissRuns: number;
 };
 
+type MainSearchGuidance = {
+  preferredQueries: string[];
+  bannedQueries: string[];
+};
+
 type MainShortlistOption = {
   candidate: Record<string, unknown>;
   summary: string;
@@ -1558,7 +1619,9 @@ type MainLeadSearchState = {
   seenLeadNames: string[];
   explicitUrlTargets: string[];
   explicitCompanyTargets: string[];
+  discoveredCompanyTargets: string[];
   explorationHints: MainExplorationHints;
+  searchGuidance?: MainSearchGuidance | null;
   currentCandidate: Record<string, unknown> | null;
   currentQualificationReasons: string[];
   currentCloseMatch: MainCloseMatch | null;
@@ -1746,6 +1809,7 @@ function initialLeadSearchState(userText: string): MainLeadSearchState {
     seenLeadNames: [],
     explicitUrlTargets: parseExplicitUrlTargetsFromUserText(userText),
     explicitCompanyTargets: [],
+    discoveredCompanyTargets: [],
     explorationHints: emptyExplorationHints(),
     currentCandidate: null,
     currentQualificationReasons: [],
@@ -2366,6 +2430,7 @@ function coerceMainFlowState(raw: unknown): MainFlowState | null {
         [],
         asNonEmptyTrimmedStringArray(raw.explicitCompanyTargets) ?? [],
       ),
+      discoveredCompanyTargets: asNonEmptyTrimmedStringArray(raw.discoveredCompanyTargets) ?? [],
       explorationHints: coerceExplorationHints(raw.explorationHints),
       currentCandidate: asCandidateRecord(raw.currentCandidate),
       currentQualificationReasons: asNonEmptyTrimmedStringArray(raw.currentQualificationReasons) ?? [],
@@ -2422,15 +2487,15 @@ function coerceMainFlowState(raw: unknown): MainFlowState | null {
 }
 
 function currentLeadMatchMode(attemptIndex: number): MainMatchMode {
-  if (attemptIndex <= 0) {
+  if (attemptIndex <= 7) {
     return "STRICT";
   }
 
-  if (attemptIndex <= 2) {
+  if (attemptIndex <= 11) {
     return "RELAX_SIZE";
   }
 
-  if (attemptIndex <= 4) {
+  if (attemptIndex <= 13) {
     return "RELAX_GEO";
   }
 
@@ -2556,6 +2621,7 @@ function deriveExplorationHintsFromCrmPayload(raw: unknown): MainExplorationHint
         )
     : [];
   const overusedQueries = deriveQueryUsage(queryHistory)
+    .filter(({ count }) => count >= SOURCER_OVERUSED_QUERY_MIN_COUNT)
     .slice(0, SOURCER_OVERUSED_QUERY_HINT_LIMIT)
     .map(({ query, count }) => ({ query, count }));
   const visitedUrls = Array.isArray(raw.visitedUrls)
@@ -2610,6 +2676,325 @@ function buildFilteredExplorationHints(state: MainLeadSearchState): MainExplorat
     visitedUrls: filteredVisitedUrls.slice(0, SOURCER_VISITED_URL_HINT_LIMIT),
     visitedHosts: deriveVisitedHostsFromUrls(filteredVisitedUrls).slice(0, SOURCER_VISITED_HOST_HINT_LIMIT),
     consecutiveHardMissRuns: state.explorationHints.consecutiveHardMissRuns,
+  };
+}
+
+function buildEmployeeRangeSearchTerms(
+  minCompanySize?: number,
+  maxCompanySize?: number,
+  matchMode: MainMatchMode = "STRICT",
+): string[] {
+  const ranges = new Set<string>();
+
+  if (minCompanySize !== undefined && maxCompanySize !== undefined) {
+    ranges.add(`${minCompanySize}-${maxCompanySize}`);
+    ranges.add(`${minCompanySize} - ${maxCompanySize}`);
+  }
+
+  if (matchMode === "STRICT" || matchMode === "RELAX_SIZE") {
+    if ((minCompanySize ?? 0) <= 10 && (maxCompanySize ?? 0) >= 49) {
+      ranges.add("10-49");
+      ranges.add("10 - 49");
+      ranges.add("11-50");
+      ranges.add("11 - 50");
+    }
+
+    if ((minCompanySize ?? 0) <= 9 && (maxCompanySize ?? 0) >= 10) {
+      ranges.add("2-10");
+      ranges.add("2 - 10");
+    }
+  }
+
+  if (matchMode === "RELAX_SIZE" || matchMode === "RELAX_GEO" || matchMode === "BEST_AVAILABLE") {
+    ranges.add("11-50");
+    ranges.add("10 - 49");
+    ranges.add("2 - 10");
+    ranges.add("51-200");
+    ranges.add("51 - 200");
+  }
+
+  return [...ranges].filter((value) => value.trim().length > 0);
+}
+
+function buildSourcerSearchGuidance(
+  state: MainLeadSearchState,
+  matchMode: MainMatchMode,
+  explorationHints: MainExplorationHints,
+): MainSearchGuidance {
+  const targetFilters = isPlainRecord(state.targetFilters) ? state.targetFilters : {};
+  const preferredCountry = asMaybeString(targetFilters.preferredCountry);
+  const preferredRegion = asMaybeString(targetFilters.preferredRegion);
+  const minCompanySize = asMaybeInteger(targetFilters.preferredMinCompanySize);
+  const maxCompanySize = asMaybeInteger(targetFilters.preferredMaxCompanySize);
+  const rangeTerms = buildEmployeeRangeSearchTerms(minCompanySize, maxCompanySize, matchMode);
+  const geographyTokens =
+    preferredCountry === "es"
+      ? ["Spain", "Madrid", "Barcelona", "Valencia"]
+      : preferredRegion === "europe"
+        ? ["Europe", "CET", "remote Europe"]
+        : ["Spain"];
+  const baseQueries = [
+    ...rangeTerms.flatMap((range) => [
+      `site:techbehemoths.com/company ${geographyTokens[0]} software "${range}"`,
+      `site:clutch.co/es/desarrolladores ${geographyTokens[0]} "${range}" software`,
+      `site:clutch.co/es/developers ${geographyTokens[0]} "${range}" software`,
+      `site:themanifest.com/es/software-development ${geographyTokens[0]} "${range}"`,
+    ]),
+    `${geographyTokens[0]} custom software development founder CTO employees`,
+    `${geographyTokens[0]} software consultancy founder CTO employees`,
+    `${geographyTokens[0]} digital product studio founder CTO employees`,
+    `${geographyTokens[0]} product engineering company founder CTO employees`,
+    `${geographyTokens.join(" ")} software agency founder CTO`,
+    `${geographyTokens.join(" ")} head of engineering software company`,
+  ];
+  const bannedQueries = explorationHints.overusedQueries
+    .map((value) => firstNonBlankString(value.query))
+    .filter((value): value is string => value !== null)
+    .slice(0, SOURCER_BANNED_QUERY_LIMIT);
+  const bannedNormalized = new Set(bannedQueries.map((value) => normalizeTrackedQuery(value)));
+  const preferredQueries = [...new Set(
+    baseQueries
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+      .filter((value) => !bannedNormalized.has(normalizeTrackedQuery(value))),
+  )].slice(0, SOURCER_PREFERRED_QUERY_LIMIT);
+
+  return {
+    preferredQueries,
+    bannedQueries,
+  };
+}
+
+function parseEmployeeRangeBounds(value: string): { min: number; max: number } | null {
+  const match = value.match(/(\d+)\s*-\s*(\d+)/u);
+  if (!match) {
+    return null;
+  }
+
+  const min = Number.parseInt(match[1]!, 10);
+  const max = Number.parseInt(match[2]!, 10);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max <= 0 || min > max) {
+    return null;
+  }
+
+  return { min, max };
+}
+
+function employeeRangeMatchesConstraints(
+  value: string | null,
+  minCompanySize?: number,
+  maxCompanySize?: number,
+): boolean {
+  if (!value || (minCompanySize === undefined && maxCompanySize === undefined)) {
+    return true;
+  }
+
+  const bounds = parseEmployeeRangeBounds(value);
+  if (!bounds) {
+    return false;
+  }
+
+  if (minCompanySize !== undefined && bounds.min < minCompanySize) {
+    return false;
+  }
+
+  if (maxCompanySize !== undefined && bounds.max > maxCompanySize) {
+    return false;
+  }
+
+  return true;
+}
+
+function extractHtmlMetaContent(html: string, matcher: RegExp): string | null {
+  const match = html.match(matcher);
+  return match?.[1]?.trim() || null;
+}
+
+function extractClutchProfileSeed(html: string, profileUrl: string): {
+  profileUrl: string;
+  companyName: string;
+  employeeRange: string | null;
+  countryName: string | null;
+} | null {
+  const companyName =
+    extractHtmlMetaContent(html, /<meta[^>]+property="og:title"[^>]+content="([^"]+)"/iu) ??
+    extractHtmlMetaContent(html, /<title>\s*([^<]+?)\s+(?:Reviews|Services|Pricing|Company Info)/iu);
+
+  if (!companyName) {
+    return null;
+  }
+
+  const employeeRange = extractHtmlMetaContent(
+    html,
+    /profile-summary__detail-label">\s*Employees\s*<\/span>[\s\S]{0,240}?profile-summary__detail-title">([^<]+)</iu,
+  );
+  const countryName = extractHtmlMetaContent(
+    html,
+    /<meta[^>]+property="business:contact_data:country_name"[^>]+content="([^"]+)"/iu,
+  );
+
+  return {
+    profileUrl: normalizeTrackedUrl(profileUrl),
+    companyName,
+    employeeRange,
+    countryName,
+  };
+}
+
+function extractClutchProfileUrls(html: string): string[] {
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  const matcher = /href="(\/profile\/[^"#?]+)"/giu;
+
+  for (const match of html.matchAll(matcher)) {
+    const profilePath = match[1]?.trim();
+    if (!profilePath) {
+      continue;
+    }
+
+    const normalized = normalizeTrackedUrl(`https://clutch.co${profilePath}`);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    urls.push(normalized);
+
+    if (urls.length >= SOURCER_SEED_PROFILE_SCAN_LIMIT * 2) {
+      break;
+    }
+  }
+
+  return urls;
+}
+
+async function fetchTextWithTimeout(url: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SOURCER_SEED_FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      headers: { "user-agent": "Mozilla/5.0" },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return null;
+    }
+
+    return await response.text();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function discoverDeterministicSourcerSeedTargets(
+  payload: Record<string, unknown>,
+): Promise<{ explicitTargetUrls: string[]; explicitTargetCompanyNames: string[] }> {
+  if (payload.action !== "SOURCE_ONE" || !isPlainRecord(payload.campaignContext)) {
+    return { explicitTargetUrls: [], explicitTargetCompanyNames: [] };
+  }
+
+  const campaignContext = payload.campaignContext;
+  const requestOverrides = isPlainRecord(campaignContext.requestOverrides)
+    ? campaignContext.requestOverrides
+    : null;
+
+  if (
+    requestOverrides &&
+    Array.isArray(requestOverrides.explicitTargetUrls) &&
+    requestOverrides.explicitTargetUrls.length > 0
+  ) {
+    return { explicitTargetUrls: [], explicitTargetCompanyNames: [] };
+  }
+
+  const targetThemes = asNonEmptyTrimmedStringArray(campaignContext.targetThemes) ?? [];
+  const countryRequested =
+    (isPlainRecord(payload.constraints) && asMaybeString(payload.constraints.targetCountry)) === "es" ||
+    targetThemes.some((value) => normalizeTrackedQuery(value).includes("spain"));
+
+  if (!countryRequested) {
+    return { explicitTargetUrls: [], explicitTargetCompanyNames: [] };
+  }
+
+  const constraints = isPlainRecord(payload.constraints) ? payload.constraints : {};
+  const minCompanySize = asMaybeInteger(constraints.minCompanySize);
+  const maxCompanySize = asMaybeInteger(constraints.maxCompanySize);
+
+  const persistedState = loadState();
+  const visitedUrlKeys = new Set<string>([
+    ...persistedState.explorationMemory.visitedUrls.map((value) => value.normalizedUrl),
+    ...(isPlainRecord(campaignContext.explorationHints) && Array.isArray(campaignContext.explorationHints.visitedUrls)
+      ? campaignContext.explorationHints.visitedUrls
+          .map((value) => firstNonBlankString(value))
+          .filter((value): value is string => value !== null)
+          .map((value) => normalizeTrackedUrl(value))
+      : []),
+  ]);
+
+  const excludedCompanyKeys = new Set<string>([
+    ...appendCompanyMatchKeys([], asNonEmptyTrimmedStringArray(payload.excludedCompanyNames) ?? []),
+    ...persistedState.searchedCompanyNames.flatMap((value) => companyMatchKeys(value)),
+  ]);
+
+  const explicitTargetUrls: string[] = [];
+  const explicitTargetCompanyNames: string[] = [];
+
+  for (const directoryUrl of SOURCER_SEED_DIRECTORY_URLS) {
+    if (explicitTargetUrls.length >= SOURCER_SEED_TARGET_LIMIT) {
+      break;
+    }
+
+    const directoryHtml = await fetchTextWithTimeout(directoryUrl);
+    if (!directoryHtml) {
+      continue;
+    }
+
+    for (const profileUrl of extractClutchProfileUrls(directoryHtml)) {
+      if (explicitTargetUrls.length >= SOURCER_SEED_TARGET_LIMIT) {
+        break;
+      }
+
+      if (visitedUrlKeys.has(profileUrl)) {
+        continue;
+      }
+
+      const profileHtml = await fetchTextWithTimeout(profileUrl);
+      if (!profileHtml) {
+        continue;
+      }
+
+      const seed = extractClutchProfileSeed(profileHtml, profileUrl);
+      if (!seed) {
+        continue;
+      }
+
+      if (seed.countryName && normalizeTrackedQuery(seed.countryName) !== "spain") {
+        continue;
+      }
+
+      if (!employeeRangeMatchesConstraints(seed.employeeRange, minCompanySize, maxCompanySize)) {
+        continue;
+      }
+
+      const companyKeys = companyMatchKeys(seed.companyName);
+      if (companyKeys.length === 0 || companyKeys.some((value) => excludedCompanyKeys.has(value))) {
+        continue;
+      }
+
+      explicitTargetUrls.push(seed.profileUrl);
+      explicitTargetCompanyNames.push(seed.companyName);
+      visitedUrlKeys.add(seed.profileUrl);
+      for (const key of companyKeys) {
+        excludedCompanyKeys.add(key);
+      }
+    }
+  }
+
+  return {
+    explicitTargetUrls,
+    explicitTargetCompanyNames,
   };
 }
 
@@ -2716,6 +3101,14 @@ function buildSourcerRequest(state: MainLeadSearchState): MainNextSendRequest {
   const explicitCompanyKeys = new Set(buildExplicitCompanyExclusionKeys(state));
   const excludedCompanyNames = state.seenCompanies.filter((value) => !explicitCompanyKeys.has(value));
   const explorationHints = buildFilteredExplorationHints(state);
+  const searchGuidance = buildSourcerSearchGuidance(state, matchMode, explorationHints);
+  const explicitCompanyTargets = [...new Set(
+    [
+      ...state.explicitCompanyTargets,
+      ...state.discoveredCompanyTargets,
+    ].map((value) => value.trim()).filter((value) => value.length > 0),
+  )];
+  state.discoveredCompanyTargets = [];
 
   state.awaitingAction = "SOURCE_ONE";
   return {
@@ -2749,14 +3142,26 @@ function buildSourcerRequest(state: MainLeadSearchState): MainNextSendRequest {
               },
             }
           : {}),
-        ...(state.explicitUrlTargets.length > 0 || state.explicitCompanyTargets.length > 0
+        ...(searchGuidance.preferredQueries.length > 0 || searchGuidance.bannedQueries.length > 0
+          ? {
+              searchGuidance: {
+                ...(searchGuidance.preferredQueries.length > 0
+                  ? { preferredQueries: searchGuidance.preferredQueries }
+                  : {}),
+                ...(searchGuidance.bannedQueries.length > 0
+                  ? { bannedQueries: searchGuidance.bannedQueries }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(state.explicitUrlTargets.length > 0 || explicitCompanyTargets.length > 0
           ? {
               requestOverrides: {
                 ...(state.explicitUrlTargets.length > 0
                   ? { explicitTargetUrls: state.explicitUrlTargets }
                   : {}),
-                ...(state.explicitCompanyTargets.length > 0
-                  ? { explicitTargetCompanyNames: state.explicitCompanyTargets }
+                ...(explicitCompanyTargets.length > 0
+                  ? { explicitTargetCompanyNames: explicitCompanyTargets }
                   : {}),
               },
             }
@@ -3757,6 +4162,7 @@ type ProspectingMainRunOptions = {
   workerIdleTimeoutMs: number;
   workerMaxRuntimeMs: number;
   maxHops: number;
+  crmClient?: NotionRecruiterClient;
 };
 
 function directWorkerAgentIdFromRequest(request: MainNextSendRequest): DirectWorkerAgentId {
@@ -3868,6 +4274,105 @@ function buildInvalidWorkerResult(
   };
 }
 
+function stageForDirectCrmError(
+  action: string,
+  error: unknown,
+): "VALIDATION" | "STATE" | "NOTION" {
+  if (error instanceof RecruiterPluginError) {
+    if (error.code === "invalid_input" || error.code === "missing_env") {
+      return "VALIDATION";
+    }
+
+    if (action === "REGISTER_ACCEPTED_LEAD") {
+      return "NOTION";
+    }
+  }
+
+  if (action === "REGISTER_ACCEPTED_LEAD") {
+    return "NOTION";
+  }
+
+  return "STATE";
+}
+
+async function executeDirectCrmAction(
+  payload: Record<string, unknown>,
+  client?: NotionRecruiterClient,
+): Promise<Record<string, unknown>> {
+  const action = typeof payload.action === "string" ? payload.action : "UNKNOWN";
+
+  try {
+    switch (action) {
+      case "GET_CAMPAIGN_STATE": {
+        const { campaignState, explorationMemory } = currentCampaignStatePayload();
+        return {
+          status: "OK",
+          action: "GET_CAMPAIGN_STATE",
+          campaignState,
+          explorationMemory,
+        };
+      }
+      case "REGISTER_ACCEPTED_LEAD": {
+        const resolvedClient =
+          client ??
+          new NotionRecruiterClient(
+            firstNonBlankString(process.env.NOTION_DATABASE_ID) ??
+              (() => {
+                throw new RecruiterPluginError(
+                  "missing_env",
+                  "NOTION_DATABASE_ID is required for direct CRM execution.",
+                  500,
+                );
+              })(),
+            () => process.env.NOTION_API_KEY,
+          );
+        return await registerAcceptedLeadAction(
+          payload as Parameters<typeof registerAcceptedLeadAction>[0],
+          resolvedClient,
+        ) as Record<string, unknown>;
+      }
+      case "REGISTER_REJECTED_CANDIDATE":
+        return await registerRejectedCandidateAction(
+          payload as Parameters<typeof registerRejectedCandidateAction>[0],
+        ) as Record<string, unknown>;
+      case "REGISTER_SOURCE_TRACE":
+        return await registerSourceTraceAction(
+          payload as Parameters<typeof registerSourceTraceAction>[0],
+        ) as Record<string, unknown>;
+      case "REGISTER_SEARCH_RUN_RESULT":
+        return await registerSearchRunResultAction(
+          payload as Parameters<typeof registerSearchRunResultAction>[0],
+        ) as Record<string, unknown>;
+      case "RESET_QUERY_MEMORY":
+        return await resetQueryMemoryAction() as Record<string, unknown>;
+      case "SAVE_PENDING_SHORTLIST":
+        return await savePendingShortlistAction(
+          payload as Parameters<typeof savePendingShortlistAction>[0],
+        ) as Record<string, unknown>;
+      case "GET_PENDING_SHORTLIST":
+        return await getPendingShortlistAction(
+          payload as Parameters<typeof getPendingShortlistAction>[0],
+        ) as Record<string, unknown>;
+      case "CLEAR_PENDING_SHORTLIST":
+        return await clearPendingShortlistAction(
+          payload as Parameters<typeof clearPendingShortlistAction>[0],
+        ) as Record<string, unknown>;
+      default:
+        return {
+          status: "ERROR",
+          stage: "VALIDATION",
+          error: `Unsupported CRM action: ${action}`,
+        };
+    }
+  } catch (error: unknown) {
+    return {
+      status: "ERROR",
+      stage: stageForDirectCrmError(action, error),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function executeDirectWorkerHop(
   request: MainNextSendRequest,
   options: ProspectingMainRunOptions,
@@ -3876,18 +4381,16 @@ async function executeDirectWorkerHop(
   const sessionKey = request.sessionKey;
   const transportTimeoutSeconds = Math.min(
     options.workerTimeoutSeconds,
-    agentId === "sourcer" ? 60 : 45,
+    agentId === "sourcer" ? 240 : 180,
   );
   const maxRuntimeMs = Math.min(
     options.workerMaxRuntimeMs,
-    agentId === "sourcer" ? 150000 : 90000,
+    agentId === "sourcer" ? 420000 : 300000,
   );
   const idleTimeoutMs = Math.min(
     options.workerIdleTimeoutMs,
-    agentId === "sourcer" ? 20000 : 15000,
+    agentId === "sourcer" ? 45000 : 30000,
   );
-
-  resetAgentSession({ sessionKey });
 
   let canonicalPayload: Record<string, unknown>;
   try {
@@ -3897,6 +4400,52 @@ async function executeDirectWorkerHop(
       request.responseContract,
       error instanceof Error ? error.message : "INVALID_OUTBOUND_REQUEST",
     );
+  }
+
+  if (agentId === "sourcer") {
+    try {
+      const seedTargets = await discoverDeterministicSourcerSeedTargets(canonicalPayload);
+      console.log(
+        `[prospecting] sourcer deterministic seeds: urls=${seedTargets.explicitTargetUrls.length} companies=${seedTargets.explicitTargetCompanyNames.length}`,
+      );
+      if (seedTargets.explicitTargetUrls.length > 0 || seedTargets.explicitTargetCompanyNames.length > 0) {
+        const rawCampaignContext = isPlainRecord(canonicalPayload.campaignContext)
+          ? canonicalPayload.campaignContext
+          : {};
+        const rawRequestOverrides = isPlainRecord(rawCampaignContext.requestOverrides)
+          ? rawCampaignContext.requestOverrides
+          : {};
+        const explicitTargetUrls = [
+          ...(asNonEmptyTrimmedStringArray(rawRequestOverrides.explicitTargetUrls) ?? []),
+          ...seedTargets.explicitTargetUrls,
+        ];
+        const explicitTargetCompanyNames = [
+          ...(asNonEmptyTrimmedStringArray(rawRequestOverrides.explicitTargetCompanyNames) ?? []),
+          ...seedTargets.explicitTargetCompanyNames,
+        ];
+
+        canonicalPayload = {
+          ...canonicalPayload,
+          campaignContext: {
+            ...rawCampaignContext,
+            requestOverrides: {
+              ...rawRequestOverrides,
+              ...(explicitTargetUrls.length > 0
+                ? { explicitTargetUrls: [...new Set(explicitTargetUrls)] }
+                : {}),
+              ...(explicitTargetCompanyNames.length > 0
+                ? { explicitTargetCompanyNames: [...new Set(explicitTargetCompanyNames)] }
+                : {}),
+            },
+          },
+        };
+      }
+    } catch (error: unknown) {
+      console.warn(
+        "[prospecting] deterministic sourcer seed discovery failed:",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   const outboundValidation = validateProspectingContract(request.contract, canonicalPayload, {});
@@ -3942,6 +4491,16 @@ async function executeDirectWorkerHop(
       parsed: validation.parsed as Record<string, unknown>,
     };
   };
+
+  if (agentId === "crm") {
+    const crmPayload = await executeDirectCrmAction(
+      outboundValidation.parsed as Record<string, unknown>,
+      options.crmClient,
+    );
+    return validateResponsePayload(JSON.stringify(crmPayload));
+  }
+
+  resetAgentSession({ sessionKey });
 
   try {
     const { stdout, stderr } = await execFileAsync(
@@ -4018,6 +4577,37 @@ function extractEvidenceUrlsFromWorkerResult(workerResult: MainWorkerResult): st
     .filter((value): value is string => value !== null);
 }
 
+function appendDiscoveredCompanyTargets(
+  state: MainLeadSearchState,
+  sourceTrace: RunScopedToolTrace | null,
+): void {
+  if (!sourceTrace || sourceTrace.candidateCompanies.length === 0) {
+    return;
+  }
+
+  const seenKeys = new Set([
+    ...state.seenCompanies,
+    ...appendCompanyMatchKeys([], state.explicitCompanyTargets),
+    ...state.discoveredCompanyTargets.flatMap((value) => companyMatchKeys(value)),
+  ]);
+
+  for (const companyName of sourceTrace.candidateCompanies) {
+    const keys = companyMatchKeys(companyName);
+    if (keys.length === 0 || keys.some((key) => seenKeys.has(key))) {
+      continue;
+    }
+
+    state.discoveredCompanyTargets.push(companyName);
+    for (const key of keys) {
+      seenKeys.add(key);
+    }
+
+    if (state.discoveredCompanyTargets.length >= 5) {
+      break;
+    }
+  }
+}
+
 async function registerSourcerTraceIfAvailable(
   request: MainNextSendRequest,
   workerResult: MainWorkerResult,
@@ -4039,6 +4629,7 @@ async function registerSourcerTraceIfAvailable(
   const evidenceUrls = extractEvidenceUrlsFromWorkerResult(workerResult);
   const queries = sourceTrace?.queries ?? [];
   const fetchedUrls = sourceTrace?.fetchedUrls ?? [];
+  appendDiscoveredCompanyTargets(state, sourceTrace);
 
   if (queries.length === 0 && fetchedUrls.length === 0 && evidenceUrls.length === 0) {
     return;
@@ -4787,10 +5378,11 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
 
         return createJsonResult(
           await runProspectingMainWorkflow(params.userText, {
-            workerTimeoutSeconds: params.workerTimeoutSeconds ?? 90,
-            workerIdleTimeoutMs: params.workerIdleTimeoutMs ?? 20000,
-            workerMaxRuntimeMs: params.workerMaxRuntimeMs ?? 150000,
-            maxHops: params.maxHops ?? 80,
+            workerTimeoutSeconds: params.workerTimeoutSeconds ?? 180,
+            workerIdleTimeoutMs: params.workerIdleTimeoutMs ?? 45000,
+            workerMaxRuntimeMs: params.workerMaxRuntimeMs ?? 300000,
+            maxHops: params.maxHops ?? 120,
+            crmClient: client,
           }) as unknown as Record<string, unknown>,
         );
       });

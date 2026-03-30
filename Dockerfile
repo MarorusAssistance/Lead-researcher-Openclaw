@@ -39,10 +39,10 @@ RUN mkdir -p ${OPENCLAW_STATE_DIR} \
 
 WORKDIR /home/openclaw
 
-COPY --chown=openclaw:openclaw entrypoint.sh /usr/local/bin/openclaw-entrypoint
-COPY --chown=openclaw:openclaw . /project
+COPY entrypoint.sh /usr/local/bin/openclaw-entrypoint
+COPY . /project
 RUN chmod +x /usr/local/bin/openclaw-entrypoint
-RUN chown -R openclaw:openclaw /project
+RUN chown -R openclaw:openclaw /project/config/agents
 
 USER openclaw
 

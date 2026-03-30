@@ -92,6 +92,7 @@ export type RequestSearchResult = {
 export type RunScopedToolTrace = {
   queries: string[];
   fetchedUrls: string[];
+  candidateCompanies: string[];
 };
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -445,6 +446,112 @@ function dedupeStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
 }
 
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/&nbsp;/gi, " ");
+}
+
+function normalizeCompanyCandidate(value: string): string | null {
+  const normalized = decodeHtmlEntities(value)
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b(is|was|are|were)\b.*$/i, "")
+    .replace(/[|,:;].*$/g, "")
+    .trim();
+
+  if (normalized.length < 2 || normalized.length > 80) {
+    return null;
+  }
+
+  if (/[.?!]/.test(normalized)) {
+    return null;
+  }
+
+  if (
+    /\b(founder|co-founder|cofounder|ceo|cto|manager|director|head of|headhunter|recruiter|advisor|consejero|acad[ée]mico|fundador|fundó|vendió|startup|startups)\b/i.test(
+      normalized,
+    )
+  ) {
+    return null;
+  }
+
+  if (
+    /^(top|best|the best|find|ratings updated|services provided|software development|artificial intelligence|spain|europe)$/i.test(
+      normalized,
+    )
+  ) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function extractCompanyCandidatesFromSnippet(value: string): string[] {
+  const candidates: string[] = [];
+  const strongMatches = [...value.matchAll(/<strong>(.*?)<\/strong>/gi)];
+
+  for (const match of strongMatches) {
+    const candidate = normalizeCompanyCandidate(match[1] ?? "");
+    if (candidate) {
+      candidates.push(candidate);
+    }
+  }
+
+  const titleCandidate = normalizeCompanyCandidate(value);
+  if (titleCandidate && /^[A-Z0-9][A-Za-z0-9&.'+\- ]+$/.test(titleCandidate)) {
+    candidates.push(titleCandidate);
+  }
+
+  return dedupeStrings(candidates);
+}
+
+function extractSearchResultCompanies(entry: SessionEntry): string[] {
+  if (entry.type !== "message" || entry.message?.role !== "toolResult") {
+    return [];
+  }
+
+  const messageRecord = entry.message as unknown as UnknownRecord;
+  const toolName = typeof messageRecord.toolName === "string" ? messageRecord.toolName : "";
+  if (toolName !== "web_search") {
+    return [];
+  }
+
+  const content = Array.isArray(entry.message.content) ? entry.message.content : [];
+  const companies: string[] = [];
+
+  for (const part of content) {
+    if (part.type !== "text" || typeof part.text !== "string") {
+      continue;
+    }
+
+    const jsonCandidate = parseJsonCandidate(part.text);
+    if (!jsonCandidate) {
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(jsonCandidate) as UnknownRecord;
+      const results = Array.isArray(parsed.results) ? parsed.results : [];
+      for (const result of results) {
+        if (!isRecord(result)) {
+          continue;
+        }
+
+        const title = typeof result.title === "string" ? result.title : "";
+        companies.push(...extractCompanyCandidatesFromSnippet(title));
+      }
+    } catch {
+      // Ignore malformed tool result payloads.
+    }
+  }
+
+  return dedupeStrings(companies);
+}
+
 export function findRunScopedToolTrace(
   entries: SessionEntry[],
   runId: string | undefined,
@@ -475,6 +582,7 @@ export function findRunScopedToolTrace(
 
   const queries: string[] = [];
   const fetchedUrls: string[] = [];
+  const candidateCompanies: string[] = [];
 
   for (let index = requestIndex + 1; index < entries.length; index += 1) {
     const entry = entries[index]!;
@@ -490,15 +598,19 @@ export function findRunScopedToolTrace(
           return {
             queries: dedupeStrings(queries),
             fetchedUrls: dedupeStrings(fetchedUrls),
+            candidateCompanies: dedupeStrings(candidateCompanies),
           };
         }
 
         return {
           queries: dedupeStrings(queries),
           fetchedUrls: dedupeStrings(fetchedUrls),
+          candidateCompanies: dedupeStrings(candidateCompanies),
         };
       }
     }
+
+    candidateCompanies.push(...extractSearchResultCompanies(entry));
 
     for (const toolCall of extractToolCalls(entry)) {
       if (toolCall.name === "web_search" && typeof toolCall.arguments.query === "string") {
@@ -514,6 +626,7 @@ export function findRunScopedToolTrace(
   return {
     queries: dedupeStrings(queries),
     fetchedUrls: dedupeStrings(fetchedUrls),
+    candidateCompanies: dedupeStrings(candidateCompanies),
   };
 }
 

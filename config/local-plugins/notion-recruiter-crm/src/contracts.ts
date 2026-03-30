@@ -65,6 +65,14 @@ export const SourcerExplorationHintsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const SourcerSearchGuidanceSchema = Type.Object(
+  {
+    preferredQueries: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 })),
+    bannedQueries: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 })),
+  },
+  { additionalProperties: false },
+);
+
 export const SourcerRequestOverridesSchema = Type.Object(
   {
     explicitTargetUrls: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 })),
@@ -167,6 +175,7 @@ const SourcerCampaignContextSchema = Type.Object(
   {
     targetThemes: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
     explorationHints: Type.Optional(SourcerExplorationHintsSchema),
+    searchGuidance: Type.Optional(SourcerSearchGuidanceSchema),
     requestOverrides: Type.Optional(SourcerRequestOverridesSchema),
   },
   { additionalProperties: false },

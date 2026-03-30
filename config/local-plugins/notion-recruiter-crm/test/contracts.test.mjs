@@ -2668,6 +2668,7 @@ run("extracts run-scoped sourcer tool traces from the session store", () => {
   assert.deepEqual(result, {
     queries: ["genai engineer spain"],
     fetchedUrls: ["https://example.ai/team?utm_source=test"],
+    candidateCompanies: [],
   });
 });
 

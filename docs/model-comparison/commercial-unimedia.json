@@ -1,0 +1,69 @@
+{
+  "action": "GENERATE_OUTREACH_PACK",
+  "runId": "compare-commercial-1",
+  "candidate": {
+    "candidateId": "cand_123",
+    "person": {
+      "fullName": "Jaume Vidal",
+      "roleTitle": "CEO & Founder",
+      "linkedinUrl": "https://www.linkedin.com/in/jaume-vidal"
+    },
+    "company": {
+      "name": "Unimedia Technology",
+      "website": "https://www.unimedia.tech",
+      "domain": "unimedia.tech"
+    },
+    "fitSignals": [
+      "Spain-based software consultancy",
+      "Company size is 10-49 employees"
+    ],
+    "evidence": [
+      {
+        "type": "company_site",
+        "url": "https://www.unimedia.tech",
+        "claim": "Unimedia Technology is based in Barcelona, Spain."
+      },
+      {
+        "type": "company_profile",
+        "url": "https://clutch.co/profile/unimedia-technology",
+        "claim": "Unimedia Technology has 10-49 employees."
+      }
+    ],
+    "notes": "Strong fit for internal automation work."
+  },
+  "qualification": {
+    "status": "ACCEPT",
+    "reasons": [
+      "Named founder",
+      "Spain-based company",
+      "Company size matches the requested range"
+    ],
+    "leadProfile": {
+      "recruiterType": "in_house",
+      "region": "Spain"
+    }
+  },
+  "channelRules": {
+    "languageMode": "MATCH_LEAD_LANGUAGE",
+    "connectionNote": {
+      "maxChars": 200,
+      "targetMinChars": 140,
+      "targetMaxChars": 190
+    },
+    "dm": {
+      "minChars": 320,
+      "maxChars": 650,
+      "paragraphCount": 3
+    },
+    "emailSubject": {
+      "minWords": 2,
+      "maxWords": 5
+    },
+    "emailBody": {
+      "minWords": 70,
+      "maxWords": 130,
+      "minSentences": 3,
+      "maxSentences": 5
+    }
+  }
+}

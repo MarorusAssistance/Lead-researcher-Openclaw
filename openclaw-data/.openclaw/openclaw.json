@@ -26,7 +26,7 @@
     "mode": "merge",
     "providers": {
       "lmstudio": {
-        "baseUrl": "http://100.93.82.63:1234/v1",
+        "baseUrl": "http://host.docker.internal:1234/v1",
         "apiKey": "doomy",
         "api": "openai-completions",
         "models": [
@@ -137,6 +137,25 @@
             "prospecting_main_run"
           ],
           "deny": [
+            "read",
+            "edit",
+            "write",
+            "exec",
+            "process",
+            "browser",
+            "canvas",
+            "nodes",
+            "cron",
+            "message",
+            "tts",
+            "gateway",
+            "agents_list",
+            "sessions_yield",
+            "subagents",
+            "image",
+            "pdf",
+            "memory_search",
+            "memory_get",
             "session_status",
             "sessions_list",
             "sessions_history",
@@ -155,6 +174,10 @@
             "web_fetch",
             "linkedin_profile_fetch",
             "linkedin_company_fetch",
+            "linkedin_entity_enrich",
+            "prospecting_crm_get_campaign_state",
+            "prospecting_crm_register_accepted_lead",
+            "prospecting_crm_register_rejected_candidate",
             "notion_recruiter_upsert",
             "notion_recruiter_get",
             "notion_recruiter_query_due_followups",
@@ -175,14 +198,14 @@
           ],
           "loopDetection": {
             "enabled": true,
-            "historySize": 12,
-            "warningThreshold": 2,
-            "criticalThreshold": 3,
-            "globalCircuitBreakerThreshold": 4,
+            "historySize": 40,
+            "warningThreshold": 8,
+            "criticalThreshold": 12,
+            "globalCircuitBreakerThreshold": 16,
             "detectors": {
-              "genericRepeat": true,
+              "genericRepeat": false,
               "knownPollNoProgress": true,
-              "pingPong": true
+              "pingPong": false
             }
           }
         }
@@ -192,7 +215,6 @@
         "workspace": "/project/config/agents/workspace-sourcer",
         "tools": {
           "allow": [
-            "web_search",
             "web_fetch"
           ],
           "deny": [
@@ -232,6 +254,18 @@
             "notion_recruiter_attach_cv",
             "prospecting_state_get",
             "prospecting_state_update",
+            "canvas",
+            "nodes",
+            "cron",
+            "message",
+            "tts",
+            "gateway",
+            "agents_list",
+            "sessions_yield",
+            "image",
+            "pdf",
+            "memory_search",
+            "memory_get",
             "exec",
             "process",
             "read",
@@ -383,6 +417,19 @@
             "notion_recruiter_attach_cv",
             "prospecting_state_get",
             "prospecting_state_update",
+            "canvas",
+            "nodes",
+            "cron",
+            "message",
+            "tts",
+            "gateway",
+            "agents_list",
+            "sessions_yield",
+            "image",
+            "pdf",
+            "linkedin_entity_enrich",
+            "memory_search",
+            "memory_get",
             "exec",
             "process",
             "read",
