@@ -59,7 +59,7 @@ The runtime architecture is the same regardless of provider:
 ## Controlled tests run
 
 ### Test A: `sourcer`
-Fixture: [source-one-spain-5-50.json](/C:/Users/maror/Projects/Personal/Lead-researcher-Openclaw/docs/model-comparison/source-one-spain-5-50.json)
+Fixture: [source-one-spain-5-50.json](./source-one-spain-5-50.json)
 
 Prompt intent:
 - find one lead in Spain
@@ -82,7 +82,7 @@ Interpretation:
 - the workflow still depends too much on prompt obedience for exclusion handling
 
 ### Test B: `commercial`
-Fixture: [commercial-unimedia.json](/C:/Users/maror/Projects/Personal/Lead-researcher-Openclaw/docs/model-comparison/commercial-unimedia.json)
+Fixture: [commercial-unimedia.json](./commercial-unimedia.json)
 
 Observed result with local model:
 - status: `READY`

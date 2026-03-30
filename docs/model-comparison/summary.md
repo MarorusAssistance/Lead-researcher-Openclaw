@@ -10,11 +10,11 @@ Two controlled worker-level comparisons were run with the same fixtures:
 - cloud: `openai/gpt-4o-mini`
 
 Fixtures:
-- [source-one-spain-5-50.json](/C:/Users/maror/Projects/Personal/Lead-researcher-Openclaw/docs/model-comparison/source-one-spain-5-50.json)
-- [commercial-unimedia.json](/C:/Users/maror/Projects/Personal/Lead-researcher-Openclaw/docs/model-comparison/commercial-unimedia.json)
+- [source-one-spain-5-50.json](./source-one-spain-5-50.json)
+- [commercial-unimedia.json](./commercial-unimedia.json)
 
 Helper runner:
-- [run-direct-agent.sh](/C:/Users/maror/Projects/Personal/Lead-researcher-Openclaw/docs/model-comparison/run-direct-agent.sh)
+- [run-direct-agent.sh](./run-direct-agent.sh)
 
 ## Measured outcome
 

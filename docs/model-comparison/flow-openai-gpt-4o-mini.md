@@ -20,7 +20,7 @@ This file only describes what changed when the worker model was swapped from the
 ## Controlled tests run
 
 ### Test A: `sourcer`
-Fixture: [source-one-spain-5-50.json](/C:/Users/maror/Projects/Personal/Lead-researcher-Openclaw/docs/model-comparison/source-one-spain-5-50.json)
+Fixture: [source-one-spain-5-50.json](./source-one-spain-5-50.json)
 
 Observed result with `gpt-4o-mini`:
 - status: `FOUND`
@@ -41,7 +41,7 @@ Interpretation:
   - insufficient code-side rejection before advancing the dossier
 
 ### Test B: `commercial`
-Fixture: [commercial-unimedia.json](/C:/Users/maror/Projects/Personal/Lead-researcher-Openclaw/docs/model-comparison/commercial-unimedia.json)
+Fixture: [commercial-unimedia.json](./commercial-unimedia.json)
 
 Observed result with `gpt-4o-mini`:
 - status: `READY`

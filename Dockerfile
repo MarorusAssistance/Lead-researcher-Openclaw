@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim
 
 LABEL maintainer="OpenClaw Docker Setup"
-LABEL description="OpenClaw gateway container for Lead-researcher-Openclaw"
+LABEL description="OpenClaw gateway container for LOLO-openclaw-gateway"
 LABEL version="1.1"
 
 ENV NODE_ENV=production \
