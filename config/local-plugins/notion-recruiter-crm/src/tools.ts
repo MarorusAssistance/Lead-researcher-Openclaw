@@ -383,6 +383,7 @@ const ProspectingMainRunSchema = Type.Object({
   workerMaxRuntimeMs: Type.Optional(Type.Integer({ minimum: 5000, maximum: 1800000 })),
   maxHops: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
 }, { additionalProperties: false });
+const LoloRouterDispatchSchema = ProspectingMainRunSchema;
 
 const DEFAULT_QUALIFICATION_RULES = {
   allowedStatuses: ["ACCEPT", "REJECT", "ENRICH"],
@@ -4157,6 +4158,18 @@ type ProspectingMainRunResult = {
   state?: MainFlowState;
 };
 
+type LoloRouterRoute = "lead_workflow" | "unsupported";
+
+type LoloRouterDispatchResult = {
+  ok: boolean;
+  route: LoloRouterRoute;
+  backend: "embedded_prospecting_legacy" | "none";
+  userMessage: string;
+  finalType?: ProspectingMainRunResult["finalType"];
+  trace?: ProspectingMainRunTrace[];
+  state?: MainFlowState;
+};
+
 type ProspectingMainRunOptions = {
   workerTimeoutSeconds: number;
   workerIdleTimeoutMs: number;
@@ -4177,6 +4190,65 @@ function directWorkerAgentIdFromRequest(request: MainNextSendRequest): DirectWor
   }
 
   throw new Error(`Unsupported worker session key: ${request.sessionKey}`);
+}
+
+function isLeadWorkflowUserRequest(userText: string): boolean {
+  if (/\bregistra(?:r)?\b/i.test(userText) || isQueryResetRequest(userText)) {
+    return true;
+  }
+
+  if (parseExplicitUrlTargetsFromUserText(userText).length > 0) {
+    return true;
+  }
+
+  if (
+    /(?:\blead\b|\bleads\b|\bprospect\b|\bprospects\b|\bshortlist\b|\bcrm\b|\bempresa(?:s)?\b|\bcompany\b|\bcompanies\b|\bemplead(?:o|os|a|as)?\b|\bemployees?\b|\boutreach\b|\bgenai\b|\bcto\b|\bceo\b|\bfounder\b|\btalent\b|\brecruit(?:er|ers|ing)?\b|\blinkedin\b)/i.test(
+      userText,
+    )
+  ) {
+    return true;
+  }
+
+  return /(busca|encuentra|find|search)/i.test(userText) &&
+    /(?:\bpersona(?:s)?\b|\bpeople\b|\bempresa(?:s)?\b|\bcompany\b|\bcontacto(?:s)?\b|\bcontacts?\b)/i.test(
+      userText,
+    );
+}
+
+export function classifyLoloRoute(userText: string): LoloRouterRoute {
+  return isLeadWorkflowUserRequest(userText) ? "lead_workflow" : "unsupported";
+}
+
+function buildUnsupportedRouteMessage(language: MainLanguage): string {
+  return language === "es"
+    ? "Esa capacidad todav\u00eda no est\u00e1 conectada en LOLO. Ahora mismo este gateway solo enruta b\u00fasqueda de leads, selecci\u00f3n de shortlist y reseteo de queries del flujo de prospecting."
+    : "That capability is not wired into LOLO yet. Right now this gateway only routes lead search, shortlist selection, and query-reset requests for the prospecting flow.";
+}
+
+async function runLoloRouterDispatch(
+  userText: string,
+  options: ProspectingMainRunOptions,
+): Promise<LoloRouterDispatchResult> {
+  const route = classifyLoloRoute(userText);
+  if (route === "lead_workflow") {
+    const result = await runProspectingMainWorkflow(userText, options);
+    return {
+      ok: result.ok,
+      route,
+      backend: "embedded_prospecting_legacy",
+      userMessage: result.userMessage,
+      finalType: result.finalType,
+      trace: result.trace,
+      state: result.state,
+    };
+  }
+
+  return {
+    ok: true,
+    route,
+    backend: "none",
+    userMessage: buildUnsupportedRouteMessage(detectMainLanguage(userText)),
+  };
 }
 
 export function extractJsonCandidateText(rawText: string): string | null {
@@ -5356,6 +5428,35 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
           explorationMemory: state.explorationMemory,
           updatedAt: state.updatedAt,
         });
+      });
+    },
+  });
+
+  api.registerTool({
+    name: "lolo_router_dispatch",
+    label: "LOLO Router Dispatch",
+    description:
+      "Thin gateway dispatcher for main. Route a raw user request into the currently supported backend workflow and return only the final user-facing result plus router metadata.",
+    parameters: LoloRouterDispatchSchema,
+    async execute(_toolCallId, rawParams) {
+      return executeTool(async () => {
+        const params = rawParams as {
+          userText: string;
+          workerTimeoutSeconds?: number;
+          workerIdleTimeoutMs?: number;
+          workerMaxRuntimeMs?: number;
+          maxHops?: number;
+        };
+
+        return createJsonResult(
+          await runLoloRouterDispatch(params.userText, {
+            workerTimeoutSeconds: params.workerTimeoutSeconds ?? 180,
+            workerIdleTimeoutMs: params.workerIdleTimeoutMs ?? 45000,
+            workerMaxRuntimeMs: params.workerMaxRuntimeMs ?? 300000,
+            maxHops: params.maxHops ?? 120,
+            crmClient: client,
+          }) as unknown as Record<string, unknown>,
+        );
       });
     },
   });

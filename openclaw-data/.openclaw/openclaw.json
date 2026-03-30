@@ -134,7 +134,7 @@
         },
         "tools": {
           "allow": [
-            "prospecting_main_run"
+            "lolo_router_dispatch"
           ],
           "deny": [
             "read",
@@ -161,6 +161,7 @@
             "sessions_history",
             "sessions_spawn",
             "sessions_send",
+            "prospecting_main_run",
             "prospecting_session_reset",
             "prospecting_main_next_action",
             "prospecting_main_start",

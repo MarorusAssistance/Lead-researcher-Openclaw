@@ -42,6 +42,7 @@ Meaning:
 ## Practical conclusion
 
 ### Short-term
+- keep this repo focused on gateway/router concerns
 - keep developing this repo so it works with the local model
 - do not expect a cloud swap alone to fix sourcing
 - if needed, use a cheap cloud model only for `commercial` or other draft-heavy steps

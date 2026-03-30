@@ -9,7 +9,7 @@ The runtime architecture is the same regardless of provider:
 
 1. `main`
    - receives user text
-   - calls `prospecting_main_run`
+   - calls `lolo_router_dispatch`
    - returns only final short prose
 2. `crm`
    - reads campaign state
@@ -32,7 +32,8 @@ The runtime architecture is the same regardless of provider:
 
 ### `main`
 - Model choice barely matters here now.
-- The real orchestration lives in `prospecting_main_run`.
+- The public boundary now lives in `lolo_router_dispatch`.
+- The real orchestration still lives in the embedded legacy prospecting backend behind that dispatcher.
 - `main` is mostly a thin shell over the plugin workflow.
 
 ### `crm`

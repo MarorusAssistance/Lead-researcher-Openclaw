@@ -16,6 +16,7 @@ import {
 } from "../dist/src/session-await.js";
 import {
   canonicalizeProspectingRequest,
+  classifyLoloRoute,
   extractJsonCandidateText,
   planProspectingMainNextAction,
 } from "../dist/src/tools.js";
@@ -146,6 +147,20 @@ run("accepts a valid sourcer SOURCE_ONE request", () => {
   );
 
   assert.equal(result.ok, true);
+});
+
+run("classifies lead-search requests into the lead workflow route", () => {
+  assert.equal(
+    classifyLoloRoute("busca 3 leads que trabajen en españa y esten en empresas de entre 5 y 50 empleados"),
+    "lead_workflow",
+  );
+});
+
+run("classifies non-lead requests as unsupported for the gateway router", () => {
+  assert.equal(
+    classifyLoloRoute("ponme un recordatorio para mañana a las 9"),
+    "unsupported",
+  );
 });
 
 run("canonicalizes SOURCE_ONE exploration hints and explicit overrides", () => {
