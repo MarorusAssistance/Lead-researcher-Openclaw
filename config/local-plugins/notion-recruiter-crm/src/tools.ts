@@ -11,6 +11,9 @@ import {
   CrmGetPendingShortlistRequestSchema,
   CrmRegisterAcceptedLeadRequestSchema,
   CrmRegisterRejectedCandidateRequestSchema,
+  CrmRegisterSearchRunResultRequestSchema,
+  CrmRegisterSourceTraceRequestSchema,
+  CrmResetQueryMemoryRequestSchema,
   CrmSavePendingShortlistRequestSchema,
   type ProspectingContract,
   ProspectingContractSchema,
@@ -44,7 +47,16 @@ import {
   type ScheduleNextActionInput,
   type UpsertRecruiterInput,
 } from "./types.js";
-import { loadState, saveState, normalizeName } from "./prospecting-state.js";
+import {
+  appendQueryHistory,
+  appendVisitedUrls,
+  deriveQueryUsage,
+  loadState,
+  normalizeName,
+  normalizeTrackedQuery,
+  normalizeTrackedUrl,
+  saveState,
+} from "./prospecting-state.js";
 import {
   clearPendingShortlist,
   loadPendingShortlist,
@@ -53,6 +65,7 @@ import {
 import {
   awaitRunScopedAssistantJson,
   readRunScopedRequestPayload,
+  readRunScopedToolTrace,
   resetAgentSession,
   type AwaitSessionJsonInput,
 } from "./session-await.js";
@@ -71,6 +84,11 @@ const DEFAULT_CV_URL_EN =
   "https://drive.google.com/file/d/1Bkr_O7egJ4lJ_-rhJlMrSt3aTcrG3oU3/view?usp=sharing";
 const DEFAULT_CV_URL_ES =
   "https://drive.google.com/file/d/1boKFfBigABiFCJ2RirVB4J2nRybpGbLg/view?usp=sharing";
+const DEFAULT_CV_URL = DEFAULT_CV_URL_EN;
+const HARD_MISS_RESET_THRESHOLD = 6;
+const SOURCER_VISITED_URL_HINT_LIMIT = 200;
+const SOURCER_VISITED_HOST_HINT_LIMIT = 20;
+const SOURCER_OVERUSED_QUERY_HINT_LIMIT = 20;
 
 function parsePluginConfig(pluginConfig: unknown): PluginConfig {
   if (Value.Check(PluginConfigSchema, pluginConfig)) {
@@ -259,17 +277,22 @@ const ProspectingStateUpdateSchema = Type.Object({
 const ProspectingCrmGetCampaignStateSchema = CrmGetCampaignStateRequestSchema;
 const ProspectingCrmRegisterAcceptedLeadSchema = CrmRegisterAcceptedLeadRequestSchema;
 const ProspectingCrmRegisterRejectedCandidateSchema = CrmRegisterRejectedCandidateRequestSchema;
+const ProspectingCrmRegisterSourceTraceSchema = CrmRegisterSourceTraceRequestSchema;
+const ProspectingCrmRegisterSearchRunResultSchema = CrmRegisterSearchRunResultRequestSchema;
+const ProspectingCrmResetQueryMemorySchema = CrmResetQueryMemoryRequestSchema;
 const ProspectingCrmSavePendingShortlistSchema = CrmSavePendingShortlistRequestSchema;
 const ProspectingCrmGetPendingShortlistSchema = CrmGetPendingShortlistRequestSchema;
 const ProspectingCrmClearPendingShortlistSchema = CrmClearPendingShortlistRequestSchema;
 const ProspectingRequestContractSchema = Type.Union([
   Type.Literal("sourcer_request"),
   Type.Literal("qualifier_request"),
+  Type.Literal("commercial_request"),
   Type.Literal("crm_request"),
 ]);
 const ProspectingResponseContractSchema = Type.Union([
   Type.Literal("sourcer_response"),
   Type.Literal("qualifier_response"),
+  Type.Literal("commercial_response"),
   Type.Literal("crm_response"),
 ]);
 
@@ -380,8 +403,8 @@ const DEFAULT_COMPANY_THEMES = [
   "B2B SaaS",
 ] as const;
 const MAIN_MATCH_MODES = ["STRICT", "RELAX_SIZE", "RELAX_GEO", "BEST_AVAILABLE"] as const;
-const DEFAULT_LEAD_ATTEMPT_BUDGET = 12;
-const MAX_LEAD_ATTEMPT_BUDGET = 36;
+const DEFAULT_LEAD_ATTEMPT_BUDGET = 5;
+const MAX_LEAD_ATTEMPT_BUDGET = 15;
 const MAX_SHORTLIST_OPTIONS = 3;
 const COUNTRY_CODE_ALIASES: Record<string, string> = {
   es: "es",
@@ -448,8 +471,74 @@ function firstNonBlankString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function repairCommonMojibake(value: string): string {
+  const trimmed = value.trim();
+  if (!/[ÃÂâ€�â€™â€œâ€\uFFFD]/.test(trimmed)) {
+    return trimmed.normalize("NFC");
+  }
+
+  try {
+    const repaired = Buffer.from(trimmed, "latin1").toString("utf8").trim().normalize("NFC");
+    if (
+      repaired.length > 0 &&
+      !/[ÃÂâ€�â€™â€œâ€\uFFFD]/.test(repaired) &&
+      repaired !== trimmed
+    ) {
+      return repaired;
+    }
+  } catch {
+    // Keep the original value when repair is not possible.
+  }
+
+  return trimmed.normalize("NFC");
+}
+
+function normalizeStoredText(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+
+  return repairCommonMojibake(trimmed);
+}
+
+function normalizeOptionalStoredText(value: unknown): string | null | undefined {
+  if (value === null) {
+    return null;
+  }
+
+  return normalizeStoredText(value);
+}
+
+function normalizeStoredStringArray(values: string[]): string[] {
+  return values
+    .map((value) => normalizeStoredText(value))
+    .filter((value): value is string => Boolean(value));
+}
+
+function hasLikelyCorruptedHumanText(value: string): boolean {
+  return /\p{L}[?\uFFFD]\p{L}/u.test(value);
+}
+
+function requireCleanHumanText(value: string, label: string): string {
+  if (hasLikelyCorruptedHumanText(value)) {
+    throw new RecruiterPluginError(
+      "invalid_input",
+      `${label} looks encoding-corrupted after normalization.`,
+      400,
+      { value },
+    );
+  }
+
+  return value;
+}
+
 function toNullableString(value: unknown): string | null {
-  return firstNonBlankString(value) ?? null;
+  return normalizeStoredText(value) ?? null;
 }
 
 function normalizeEvidenceItems(
@@ -554,7 +643,7 @@ type CanonicalLeadCandidate = {
 
 function normalizeResponseContract(
   contract: ProspectingContract,
-): "sourcer_response" | "qualifier_response" | "crm_response" {
+): "sourcer_response" | "qualifier_response" | "commercial_response" | "crm_response" {
   switch (contract) {
     case "sourcer_request":
     case "sourcer_response":
@@ -562,6 +651,9 @@ function normalizeResponseContract(
     case "qualifier_request":
     case "qualifier_response":
       return "qualifier_response";
+    case "commercial_request":
+    case "commercial_response":
+      return "commercial_response";
     case "crm_request":
     case "crm_response":
       return "crm_response";
@@ -571,7 +663,7 @@ function normalizeResponseContract(
 }
 
 function applyRequestPayloadToValidationContext(
-  responseContract: "sourcer_response" | "qualifier_response" | "crm_response",
+  responseContract: "sourcer_response" | "qualifier_response" | "commercial_response" | "crm_response",
   requestPayload: unknown,
   expectedAction: string,
   baseContext?: ProspectingContractValidateInput["context"],
@@ -619,11 +711,19 @@ function applyRequestPayloadToValidationContext(
     }
   }
 
+  if (responseContract === "commercial_response" && merged.expectedCandidateId === undefined) {
+    const requestCandidate = isPlainRecord(requestPayload.candidate) ? requestPayload.candidate : {};
+    const expectedCandidateId = firstNonBlankString(requestCandidate.candidateId);
+    if (expectedCandidateId) {
+      merged.expectedCandidateId = expectedCandidateId;
+    }
+  }
+
   return merged;
 }
 
 function resolveValidationContext(
-  responseContract: "sourcer_response" | "qualifier_response" | "crm_response",
+  responseContract: "sourcer_response" | "qualifier_response" | "commercial_response" | "crm_response",
   params: Pick<
     AwaitSessionJsonInput,
     "sessionKey" | "runId" | "expectedAction"
@@ -909,11 +1009,126 @@ function canonicalizeSourcerRequest(payload: Record<string, unknown>): Record<st
       canonicalConstraints.maxCompanySize = maxCompanySize;
     }
 
+    const rawExplorationHints = isPlainRecord(rawCampaignContext.explorationHints)
+      ? rawCampaignContext.explorationHints
+      : {};
+    const rawOverusedQueries = Array.isArray(rawExplorationHints.overusedQueries)
+      ? rawExplorationHints.overusedQueries
+      : [];
+    const rawVisitedHosts = Array.isArray(rawExplorationHints.visitedHosts)
+      ? rawExplorationHints.visitedHosts
+      : [];
+    const overusedQueries: Array<{ query: string; count: number }> = [];
+    const seenOverusedQueries = new Set<string>();
+
+    for (const value of rawOverusedQueries) {
+      if (!isPlainRecord(value)) {
+        continue;
+      }
+
+      const query = firstNonBlankString(value.query);
+      if (!query) {
+        continue;
+      }
+
+      const normalizedQuery = normalizeTrackedQuery(query);
+      if (!normalizedQuery || seenOverusedQueries.has(normalizedQuery)) {
+        continue;
+      }
+
+      seenOverusedQueries.add(normalizedQuery);
+      overusedQueries.push({
+        query,
+        count: Math.max(asMaybeInteger(value.count) ?? 1, 1),
+      });
+
+      if (overusedQueries.length >= SOURCER_OVERUSED_QUERY_HINT_LIMIT) {
+        break;
+      }
+    }
+
+    const visitedUrls = Array.from(
+      new Set(
+        (asNonEmptyTrimmedStringArray(rawExplorationHints.visitedUrls) ?? [])
+          .map((value) => normalizeTrackedUrl(value))
+          .filter((value) => value.length > 0),
+      ),
+    ).slice(0, SOURCER_VISITED_URL_HINT_LIMIT);
+    const visitedHosts: Array<{ host: string; count: number }> = [];
+    const seenVisitedHosts = new Set<string>();
+
+    for (const value of rawVisitedHosts) {
+      if (!isPlainRecord(value)) {
+        continue;
+      }
+
+      const host = firstNonBlankString(value.host)?.toLowerCase();
+      if (!host || seenVisitedHosts.has(host)) {
+        continue;
+      }
+
+      seenVisitedHosts.add(host);
+      visitedHosts.push({
+        host,
+        count: Math.max(asMaybeInteger(value.count) ?? 1, 1),
+      });
+
+      if (visitedHosts.length >= SOURCER_VISITED_HOST_HINT_LIMIT) {
+        break;
+      }
+    }
+
+    const rawRequestOverrides = isPlainRecord(rawCampaignContext.requestOverrides)
+      ? rawCampaignContext.requestOverrides
+      : {};
+    const explicitTargetUrls = Array.from(
+      new Set(
+        (asNonEmptyTrimmedStringArray(rawRequestOverrides.explicitTargetUrls) ?? [])
+          .map((value) => normalizeTrackedUrl(value))
+          .filter((value) => value.length > 0),
+      ),
+    ).slice(0, 20);
+    const explicitTargetCompanyNames: string[] = [];
+    const seenExplicitCompanyNames = new Set<string>();
+
+    for (const value of asNonEmptyTrimmedStringArray(rawRequestOverrides.explicitTargetCompanyNames) ?? []) {
+      const normalized = normalizeName(value);
+      if (!normalized || seenExplicitCompanyNames.has(normalized)) {
+        continue;
+      }
+
+      seenExplicitCompanyNames.add(normalized);
+      explicitTargetCompanyNames.push(value.trim());
+
+      if (explicitTargetCompanyNames.length >= 20) {
+        break;
+      }
+    }
+
     return {
       action: "SOURCE_ONE",
       runId: payload.runId,
       campaignContext: {
         targetThemes,
+        ...(overusedQueries.length > 0 || visitedUrls.length > 0 || visitedHosts.length > 0
+          ? {
+              explorationHints: {
+                ...(overusedQueries.length > 0 ? { overusedQueries } : {}),
+                ...(visitedUrls.length > 0 ? { visitedUrls } : {}),
+                ...(visitedHosts.length > 0 ? { visitedHosts } : {}),
+              },
+            }
+          : {}),
+        ...(explicitTargetUrls.length > 0 || explicitTargetCompanyNames.length > 0
+          ? {
+              requestOverrides: {
+                ...(explicitTargetUrls.length > 0 ? { explicitTargetUrls } : {}),
+                ...(explicitTargetCompanyNames.length > 0
+                  ? { explicitTargetCompanyNames }
+                  : {}),
+              },
+            }
+          : {}),
       },
       excludedCompanyNames,
       excludedLeadNames,
@@ -1012,6 +1227,78 @@ function canonicalizeQualifierRequest(payload: Record<string, unknown>): Record<
   };
 }
 
+function canonicalizeCommercialRequest(payload: Record<string, unknown>): Record<string, unknown> {
+  const rawCandidate =
+    (isPlainRecord(payload.candidate) ? payload.candidate : undefined) ??
+    (isPlainRecord(payload.currentDossier) ? payload.currentDossier : undefined) ??
+    payload.candidate;
+  const candidate = canonicalizeCandidateLike(rawCandidate);
+  const rawQualification = isPlainRecord(payload.qualification) ? payload.qualification : {};
+  const rawChannelRules = isPlainRecord(payload.channelRules) ? payload.channelRules : {};
+  const rawConnectionNote = isPlainRecord(rawChannelRules.connectionNote)
+    ? rawChannelRules.connectionNote
+    : {};
+  const rawDm = isPlainRecord(rawChannelRules.dm) ? rawChannelRules.dm : {};
+  const rawEmailSubject = isPlainRecord(rawChannelRules.emailSubject)
+    ? rawChannelRules.emailSubject
+    : {};
+  const rawEmailBody = isPlainRecord(rawChannelRules.emailBody) ? rawChannelRules.emailBody : {};
+
+  return {
+    action: "GENERATE_OUTREACH_PACK",
+    runId: payload.runId,
+    candidate,
+    qualification: {
+      status:
+        asMaybeString(rawQualification.status) === "REJECT" ? "REJECT" : "ACCEPT",
+      reasons: asNonEmptyTrimmedStringArray(rawQualification.reasons) ?? ["Commercially relevant lead."],
+      ...(coerceLeadProfile(rawQualification.leadProfile)
+        ? { leadProfile: coerceLeadProfile(rawQualification.leadProfile) }
+        : {}),
+      ...(isPlainRecord(rawQualification.closeMatch)
+        ? {
+            closeMatch: {
+              summary: firstNonBlankString(rawQualification.closeMatch.summary) ?? "Close match.",
+              missedFilters:
+                asNonEmptyTrimmedStringArray(rawQualification.closeMatch.missedFilters) ??
+                ["requested filters"],
+              reasons:
+                asNonEmptyTrimmedStringArray(rawQualification.closeMatch.reasons) ??
+                ["Strong lead with a near miss."],
+            },
+          }
+        : {}),
+    },
+    channelRules: {
+      languageMode:
+        asMaybeString(rawChannelRules.languageMode) === "FORCE_ES" ||
+        asMaybeString(rawChannelRules.languageMode) === "FORCE_EN"
+          ? asMaybeString(rawChannelRules.languageMode)
+          : "MATCH_LEAD_LANGUAGE",
+      connectionNote: {
+        maxChars: asMaybeInteger(rawConnectionNote.maxChars) ?? 200,
+        targetMinChars: asMaybeInteger(rawConnectionNote.targetMinChars) ?? 140,
+        targetMaxChars: asMaybeInteger(rawConnectionNote.targetMaxChars) ?? 190,
+      },
+      dm: {
+        minChars: asMaybeInteger(rawDm.minChars) ?? 320,
+        maxChars: asMaybeInteger(rawDm.maxChars) ?? 650,
+        paragraphCount: asMaybeInteger(rawDm.paragraphCount) ?? 3,
+      },
+      emailSubject: {
+        minWords: asMaybeInteger(rawEmailSubject.minWords) ?? 2,
+        maxWords: asMaybeInteger(rawEmailSubject.maxWords) ?? 5,
+      },
+      emailBody: {
+        minWords: asMaybeInteger(rawEmailBody.minWords) ?? 70,
+        maxWords: asMaybeInteger(rawEmailBody.maxWords) ?? 130,
+        minSentences: asMaybeInteger(rawEmailBody.minSentences) ?? 3,
+        maxSentences: asMaybeInteger(rawEmailBody.maxSentences) ?? 5,
+      },
+    },
+  };
+}
+
 function canonicalizeCrmRequest(payload: Record<string, unknown>): Record<string, unknown> {
   if (payload.action === "GET_CAMPAIGN_STATE") {
     return {
@@ -1050,6 +1337,47 @@ function canonicalizeCrmRequest(payload: Record<string, unknown>): Record<string
         originalRequestSummary: pendingShortlist.originalRequestSummary,
         options: pendingShortlist.options,
       },
+    };
+  }
+
+  if (payload.action === "REGISTER_SOURCE_TRACE") {
+    const rawSourceTrace = isPlainRecord(payload.sourceTrace)
+      ? payload.sourceTrace
+      : isPlainRecord(payload.trace)
+        ? payload.trace
+        : {};
+
+    return {
+      action: "REGISTER_SOURCE_TRACE",
+      runId: payload.runId,
+      sourceTrace: {
+        queries: asNonEmptyTrimmedStringArray(rawSourceTrace.queries) ?? [],
+        fetchedUrls: asNonEmptyTrimmedStringArray(rawSourceTrace.fetchedUrls) ?? [],
+        evidenceUrls: asNonEmptyTrimmedStringArray(rawSourceTrace.evidenceUrls) ?? [],
+      },
+    };
+  }
+
+  if (payload.action === "REGISTER_SEARCH_RUN_RESULT") {
+    const rawResult = isPlainRecord(payload.result)
+      ? payload.result
+      : isPlainRecord(payload.searchRunResult)
+        ? payload.searchRunResult
+        : {};
+
+    return {
+      action: "REGISTER_SEARCH_RUN_RESULT",
+      runId: payload.runId,
+      result: {
+        outcome: firstNonBlankString(rawResult.outcome) ?? firstNonBlankString(payload.outcome),
+      },
+    };
+  }
+
+  if (payload.action === "RESET_QUERY_MEMORY") {
+    return {
+      action: "RESET_QUERY_MEMORY",
+      runId: payload.runId,
     };
   }
 
@@ -1101,6 +1429,8 @@ function canonicalizeCrmRequest(payload: Record<string, unknown>): Record<string
       runId: payload.runId,
       candidate,
       decision,
+      leadProfile: coerceLeadProfile(payload.leadProfile) ?? undefined,
+      outreachPack: isPlainRecord(payload.outreachPack) ? payload.outreachPack : undefined,
       campaignStateUpdate,
     };
   }
@@ -1151,6 +1481,10 @@ export function canonicalizeProspectingRequest(
     return canonicalizeQualifierRequest(payload);
   }
 
+  if (contract === "commercial_request") {
+    return canonicalizeCommercialRequest(payload);
+  }
+
   if (contract === "crm_request") {
     return canonicalizeCrmRequest(payload);
   }
@@ -1168,11 +1502,43 @@ type MainAcceptedLead = {
   optionIndex?: number;
 };
 
+type MainOutreachPack = {
+  sourceNotes: string;
+  hook1: string;
+  hook2: string;
+  fitSummary: string;
+  connectionNoteDraft: string;
+  dmDraft: string;
+  emailSubjectDraft: string;
+  emailBodyDraft: string;
+  nextActionType: "connection_request";
+};
+
+type MainCloseMatch = {
+  summary: string;
+  missedFilters: string[];
+  reasons: string[];
+};
+
+type MainLeadProfile = {
+  recruiterType: "in_house" | "agency";
+  region: string;
+};
+
+type MainExplorationHints = {
+  overusedQueries: Array<{ query: string; count: number }>;
+  visitedUrls: string[];
+  visitedHosts: Array<{ host: string; count: number }>;
+  consecutiveHardMissRuns: number;
+};
+
 type MainShortlistOption = {
   candidate: Record<string, unknown>;
   summary: string;
   missedFilters: string[];
   reasons: string[];
+  leadProfile?: MainLeadProfile;
+  outreachPack?: MainOutreachPack;
 };
 
 type MainLeadSearchState = {
@@ -1187,9 +1553,17 @@ type MainLeadSearchState = {
   attemptIndex: number;
   acceptedLeads: MainAcceptedLead[];
   shortlistOptions: MainShortlistOption[];
+  knownCompanyNames: string[];
   seenCompanies: string[];
   seenLeadNames: string[];
+  explicitUrlTargets: string[];
+  explicitCompanyTargets: string[];
+  explorationHints: MainExplorationHints;
   currentCandidate: Record<string, unknown> | null;
+  currentQualificationReasons: string[];
+  currentCloseMatch: MainCloseMatch | null;
+  currentLeadProfile: MainLeadProfile | null;
+  currentOutreachPack: MainOutreachPack | null;
   currentMatchMode: MainMatchMode | null;
   enrichRoundCount: number;
   awaitingAction: string | null;
@@ -1206,19 +1580,30 @@ type MainShortlistRegistrationState = {
   awaitingAction: string | null;
 };
 
-type MainFlowState = MainLeadSearchState | MainShortlistRegistrationState;
+type MainQueryResetState = {
+  mode: "query_reset";
+  language: MainLanguage;
+  requestId: string;
+  awaitingAction: string | null;
+};
+
+type MainFlowState = MainLeadSearchState | MainShortlistRegistrationState | MainQueryResetState;
 
 type MainNextSendRequest = {
   sessionKey: string;
-  contract: "crm_request" | "sourcer_request" | "qualifier_request";
-  responseContract: "crm_response" | "sourcer_response" | "qualifier_response";
+  contract: "crm_request" | "sourcer_request" | "qualifier_request" | "commercial_request";
+  responseContract:
+    | "crm_response"
+    | "sourcer_response"
+    | "qualifier_response"
+    | "commercial_response";
   expectedAction: string;
   payload: Record<string, unknown>;
   responseContext?: Record<string, unknown>;
 };
 
 type MainWorkerResult = {
-  contract: "crm_response" | "sourcer_response" | "qualifier_response";
+  contract: "crm_response" | "sourcer_response" | "qualifier_response" | "commercial_response";
   ok: boolean;
   status: "VALID" | "INVALID" | "MALFORMED" | "TIMEOUT";
   parsed?: Record<string, unknown>;
@@ -1324,6 +1709,20 @@ function parseSourcerThemesFromUserText(userText: string): string[] {
   return canonicalizeTargetThemes(rawThemes);
 }
 
+function parseExplicitUrlTargetsFromUserText(userText: string): string[] {
+  const matches = userText.match(/https?:\/\/[^\s)>"']+/giu) ?? [];
+  return [...new Set(matches.map((value) => normalizeTrackedUrl(value)).filter((value) => value.length > 0))];
+}
+
+function emptyExplorationHints(): MainExplorationHints {
+  return {
+    overusedQueries: [],
+    visitedUrls: [],
+    visitedHosts: [],
+    consecutiveHardMissRuns: 0,
+  };
+}
+
 function initialLeadSearchState(userText: string): MainLeadSearchState {
   const language = detectMainLanguage(userText);
   const requestedLeadCount = parseRequestedLeadCount(userText);
@@ -1342,9 +1741,17 @@ function initialLeadSearchState(userText: string): MainLeadSearchState {
     attemptIndex: 0,
     acceptedLeads: [],
     shortlistOptions: [],
+    knownCompanyNames: [],
     seenCompanies: [],
     seenLeadNames: [],
+    explicitUrlTargets: parseExplicitUrlTargetsFromUserText(userText),
+    explicitCompanyTargets: [],
+    explorationHints: emptyExplorationHints(),
     currentCandidate: null,
+    currentQualificationReasons: [],
+    currentCloseMatch: null,
+    currentLeadProfile: null,
+    currentOutreachPack: null,
     currentMatchMode: null,
     enrichRoundCount: 0,
     awaitingAction: null,
@@ -1374,6 +1781,21 @@ function initialShortlistRegistrationState(
   };
 }
 
+function isQueryResetRequest(userText: string): boolean {
+  return /(?:resetea(?:r)?|reinicia(?:r)?|limpia(?:r)?|reset)\b[\s\S]*\b(?:queries|consultas)\b/i.test(
+    userText,
+  );
+}
+
+function initialQueryResetState(userText: string): MainQueryResetState {
+  return {
+    mode: "query_reset",
+    language: detectMainLanguage(userText),
+    requestId: shortId("query_reset"),
+    awaitingAction: null,
+  };
+}
+
 function buildFinalResult(
   state: MainFlowState,
   finalType: "INSERTED" | "SHORTLIST" | "NO_LEAD" | "FAILED",
@@ -1384,7 +1806,7 @@ function buildFinalResult(
     outcome: "final",
     state,
     finalType,
-    userMessage,
+    userMessage: repairCommonMojibake(userMessage),
   };
 }
 
@@ -1409,7 +1831,8 @@ function coerceMainWorkerResult(raw: unknown): MainWorkerResult | null {
   const contract =
     raw.contract === "crm_response" ||
     raw.contract === "sourcer_response" ||
-    raw.contract === "qualifier_response"
+    raw.contract === "qualifier_response" ||
+    raw.contract === "commercial_response"
       ? raw.contract
       : null;
   const status =
@@ -1452,6 +1875,319 @@ function coerceAcceptedLead(raw: unknown): MainAcceptedLead | null {
   };
 }
 
+function coerceOutreachPack(raw: unknown): MainOutreachPack | null {
+  if (!isPlainRecord(raw)) {
+    return null;
+  }
+
+  const sourceNotes = firstNonBlankString(raw.sourceNotes);
+  const hook1 = firstNonBlankString(raw.hook1);
+  const hook2 = firstNonBlankString(raw.hook2);
+  const fitSummary = firstNonBlankString(raw.fitSummary);
+  const connectionNoteDraft = firstNonBlankString(raw.connectionNoteDraft);
+  const dmDraft = firstNonBlankString(raw.dmDraft);
+  const emailSubjectDraft = firstNonBlankString(raw.emailSubjectDraft);
+  const emailBodyDraft = firstNonBlankString(raw.emailBodyDraft);
+
+  if (
+    !sourceNotes ||
+    !hook1 ||
+    !hook2 ||
+    !fitSummary ||
+    !connectionNoteDraft ||
+    !dmDraft ||
+    !emailSubjectDraft ||
+    !emailBodyDraft
+  ) {
+    return null;
+  }
+
+  return {
+    sourceNotes,
+    hook1,
+    hook2,
+    fitSummary,
+    connectionNoteDraft,
+    dmDraft,
+    emailSubjectDraft,
+    emailBodyDraft,
+    nextActionType: "connection_request",
+  };
+}
+
+function trimToSentenceBoundary(text: string, maxChars: number): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+
+  const clipped = trimmed.slice(0, maxChars);
+  const lastSentence = Math.max(clipped.lastIndexOf("."), clipped.lastIndexOf("!"), clipped.lastIndexOf("?"));
+  if (lastSentence >= Math.floor(maxChars * 0.6)) {
+    return clipped.slice(0, lastSentence + 1).trim();
+  }
+
+  return clipped.trimEnd();
+}
+
+function truncateConnectionNote(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 200) {
+    return normalized;
+  }
+
+  const variants = [
+    normalized,
+    normalized
+      .replace("Me gustaría conectar y compartir una idea concreta.", "Me gustaría conectar y compartir una idea.")
+      .replace("Me gustaría conectar y compartirte una idea concreta.", "Me gustaría conectar y compartir una idea.")
+      .replace("automatizar trabajo interno", "automatizar trabajo"),
+  ];
+
+  for (const variant of variants) {
+    if (variant.length <= 200) {
+      return variant;
+    }
+  }
+
+  return trimToSentenceBoundary(variants[variants.length - 1]!, 200);
+}
+
+function evidenceClaimSummary(candidate: Record<string, unknown> | null): string | null {
+  if (!candidate) {
+    return null;
+  }
+
+  const evidence = Array.isArray(candidate.evidence) ? candidate.evidence : [];
+  for (const item of evidence) {
+    if (!isPlainRecord(item)) {
+      continue;
+    }
+
+    const claim = firstNonBlankString(item.claim);
+    if (claim) {
+      return claim;
+    }
+  }
+
+  return null;
+}
+
+function fallbackHookValues(
+  candidate: Record<string, unknown> | null,
+  reasons: string[],
+): { hook1: string; hook2: string; fitSummary: string; sourceNotes: string } {
+  const fitSignals = candidate && Array.isArray(candidate.fitSignals)
+    ? candidate.fitSignals
+        .map((value) => firstNonBlankString(value))
+        .filter((value): value is string => Boolean(value))
+    : [];
+  const hook1 = fitSignals[0] ?? reasons[0] ?? "Spain-based technical lead";
+  const hook2 = fitSignals[1] ?? reasons[1] ?? "Potential fit for agentic automation";
+  const fitSummary =
+    firstNonBlankString(candidate && isPlainRecord(candidate) ? candidate.notes : undefined) ??
+    [hook1, hook2].filter(Boolean).join(". ");
+  const sourceNotes = [reasons.join(" "), evidenceClaimSummary(candidate)].filter(Boolean).join(" | ");
+
+  return {
+    hook1,
+    hook2,
+    fitSummary,
+    sourceNotes: sourceNotes.length > 0 ? sourceNotes : [hook1, hook2].join(" | "),
+  };
+}
+
+function buildFallbackOutreachPack(
+  language: MainLanguage,
+  candidate: Record<string, unknown> | null,
+  reasons: string[],
+): MainOutreachPack {
+  const leadName = candidateLeadName(candidate) ?? (language === "es" ? "equipo" : "team");
+  const companyName = candidateCompanyName(candidate) ?? (language === "es" ? "tu empresa" : "your company");
+  const person = candidate && isPlainRecord(candidate.person) ? candidate.person : {};
+  const roleTitle =
+    firstNonBlankString(person.roleTitle) ??
+    (language === "es" ? "un rol técnico" : "a technical role");
+  const normalizedRole = roleTitle.replace(/\.$/, "");
+  const { hook1, hook2, fitSummary, sourceNotes } = fallbackHookValues(candidate, reasons);
+
+  const connectionNote =
+    language === "es"
+      ? truncateConnectionNote(
+          `Hola ${leadName}, vi que en ${companyName} llevas ${normalizedRole}. Diseño sistemas agentic/GenAI para automatizar trabajo interno en equipos IT pequeños. Me gustaría conectar y compartir una idea concreta.`,
+        )
+      : truncateConnectionNote(
+          `Hi ${leadName}, I saw that at ${companyName} you lead ${normalizedRole}. I build agentic/GenAI systems that automate internal work for small IT teams. I’d like to connect and share one relevant idea.`,
+        );
+
+  const dmDraft =
+    language === "es"
+      ? `Hola ${leadName}.\n\nVi que en ${companyName} llevas ${normalizedRole} y pensé que podía ser relevante escribirte porque suelo ayudar a equipos IT pequeños a convertir trabajo interno repetitivo en sistemas agentic/GenAI útiles.\n\nEn contextos como el vuestro eso suele aterrizar en automatización de operaciones, research comercial o preparación de propuestas. Si te interesa, te comparto una idea concreta que sí tendría sentido para vuestro entorno.`
+      : `Hi ${leadName}.\n\nI noticed that at ${companyName} you lead ${normalizedRole}, which is why I thought this might be relevant. I usually help small IT teams turn repetitive internal work into useful agentic/GenAI systems.\n\nIn setups like yours that usually means automating operations, commercial research, or proposal preparation. If useful, I can share one concrete idea that would plausibly fit your environment.`;
+
+  const emailSubjectDraft =
+    language === "es" ? "automatización interna genai" : "internal genai workflows";
+
+  const emailBodyDraft =
+    language === "es"
+      ? `Hola ${leadName}. Vi que en ${companyName} llevas ${normalizedRole}, y pensé que podía ser relevante escribirte porque suelo ayudar a equipos IT pequeños a convertir trabajo interno repetitivo en sistemas agentic/GenAI útiles. En contextos como el vuestro eso suele aterrizar en automatización de operaciones, research comercial o preparación de propuestas sin añadir una capa grande de producto. La idea no es vender humo, sino detectar un flujo manual claro y resolverlo de forma pequeña, medible y útil. Si te interesa, te comparto por aquí una idea concreta que sí tendría sentido para vuestro contexto.`
+      : `Hi ${leadName}. I saw that at ${companyName} you lead ${normalizedRole}, and I thought it might be relevant to reach out because I help small IT teams turn repetitive internal work into useful agentic/GenAI systems. In setups like yours that usually means automating operations, commercial research, or proposal preparation without adding a heavy product layer. The goal is not vague AI hype, but finding one clear manual workflow and solving it in a small, measurable, useful way. If helpful, I can share one concrete idea that would plausibly fit your context.`;
+
+  return {
+    sourceNotes,
+    hook1,
+    hook2,
+    fitSummary,
+    connectionNoteDraft: connectionNote,
+    dmDraft,
+    emailSubjectDraft,
+    emailBodyDraft,
+    nextActionType: "connection_request",
+  };
+}
+
+function buildFriendlyFallbackOutreachPack(
+  language: MainLanguage,
+  candidate: Record<string, unknown> | null,
+  reasons: string[],
+): MainOutreachPack {
+  const leadName = candidateLeadName(candidate) ?? (language === "es" ? "equipo" : "team");
+  const companyName =
+    candidateCompanyName(candidate) ?? (language === "es" ? "tu empresa" : "your company");
+  const person = candidate && isPlainRecord(candidate.person) ? candidate.person : {};
+  const roleTitle =
+    normalizeStoredText(person.roleTitle) ??
+    (language === "es" ? "un rol técnico" : "a technical role");
+  const normalizedRole = roleTitle.replace(/\.$/, "");
+  const base = buildFallbackOutreachPack(language, candidate, reasons);
+
+  const connectionNoteDraft =
+    language === "es"
+      ? truncateConnectionNote(
+          `Hola ${leadName}, vi que en ${companyName} llevas ${normalizedRole}. Trabajo creando sistemas agentic/GenAI para quitar trabajo manual en equipos IT pequeños. Me apetecía conectar.`,
+        )
+      : truncateConnectionNote(
+          `Hi ${leadName}, I saw that at ${companyName} you lead ${normalizedRole}. I build agentic/GenAI systems that remove manual internal work for small IT teams. Happy to connect.`,
+        );
+
+  const dmDraft =
+    language === "es"
+      ? `Hola ${leadName}.\n\nVi que en ${companyName} llevas ${normalizedRole} y me dio la sensación de que podía tener sentido escribirte. Suelo ayudar a equipos IT pequeños a quitar trabajo repetitivo con sistemas agentic/GenAI útiles y bastante aterrizados.\n\nEn contextos como el vuestro suele encajar en operaciones internas, research comercial o preparación de propuestas. Si te cuadra, te comparto una idea concreta pensada para un entorno como el vuestro.`
+      : `Hi ${leadName}.\n\nI noticed that at ${companyName} you lead ${normalizedRole}, and it felt worth reaching out. I usually help small IT teams remove repetitive internal work with practical agentic/GenAI systems.\n\nIn setups like yours that often lands in internal operations, commercial research, or proposal prep. If it sounds relevant, I can share one concrete idea that would plausibly fit your environment.`;
+
+  const emailSubjectDraft =
+    language === "es" ? "una idea de automatización" : "one workflow idea";
+
+  const emailBodyDraft =
+    language === "es"
+      ? `Hola ${leadName}. Vi que en ${companyName} llevas ${normalizedRole}, y pensé que quizá te pueda interesar esto. Suelo ayudar a equipos IT pequeños a quitar carga manual con sistemas agentic/GenAI útiles y bastante aterrizados, normalmente en operaciones internas, research comercial o preparación de propuestas. La idea no es meter una capa enorme de producto, sino detectar un flujo manual claro y resolverlo de forma simple y útil. Si te encaja, te comparto una idea concreta que podría tener sentido para vuestro contexto.`
+      : `Hi ${leadName}. I saw that at ${companyName} you lead ${normalizedRole}, and I thought this might be worth sharing. I usually help small IT teams remove manual internal work with practical agentic/GenAI systems, often around operations, commercial research, or proposal prep. The idea is not to add a heavy product layer, but to spot one clear workflow and solve it in a simple, useful way. If helpful, I can share one concrete idea that could make sense in your context.`;
+
+  return {
+    ...base,
+    connectionNoteDraft: repairCommonMojibake(connectionNoteDraft),
+    dmDraft: repairCommonMojibake(dmDraft),
+    emailSubjectDraft: repairCommonMojibake(emailSubjectDraft),
+    emailBodyDraft: repairCommonMojibake(emailBodyDraft),
+  };
+}
+
+function coerceLeadProfile(raw: unknown): MainLeadProfile | null {
+  if (!isPlainRecord(raw)) {
+    return null;
+  }
+
+  const recruiterType = raw.recruiterType;
+  const region = normalizeStoredText(raw.region);
+  if ((recruiterType !== "in_house" && recruiterType !== "agency") || !region) {
+    return null;
+  }
+
+  return {
+    recruiterType,
+    region,
+  };
+}
+
+function normalizeTextForMatch(value: string): string {
+  return repairCommonMojibake(value)
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+}
+
+function collectCandidateMatchText(candidate: Record<string, unknown> | null): string {
+  if (!candidate) {
+    return "";
+  }
+
+  const person = isPlainRecord(candidate.person) ? candidate.person : {};
+  const company = isPlainRecord(candidate.company) ? candidate.company : {};
+  const fitSignals = Array.isArray(candidate.fitSignals) ? candidate.fitSignals : [];
+  const evidence = Array.isArray(candidate.evidence) ? candidate.evidence : [];
+
+  return [
+    firstNonBlankString(person.fullName),
+    firstNonBlankString(person.roleTitle),
+    firstNonBlankString(company.name),
+    firstNonBlankString(company.website),
+    firstNonBlankString(company.domain),
+    firstNonBlankString(candidate.notes),
+    ...fitSignals.map((value) => firstNonBlankString(value)),
+    ...evidence.flatMap((item) =>
+      isPlainRecord(item)
+        ? [firstNonBlankString(item.claim), firstNonBlankString(item.url)]
+        : [],
+    ),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => normalizeTextForMatch(value))
+    .join(" ");
+}
+
+function deriveLeadProfile(
+  candidate: Record<string, unknown> | null,
+  fallbackCountryCode?: string,
+): MainLeadProfile | null {
+  if (!candidate) {
+    return null;
+  }
+
+  const text = collectCandidateMatchText(candidate);
+  const person = isPlainRecord(candidate.person) ? candidate.person : {};
+  const company = isPlainRecord(candidate.company) ? candidate.company : {};
+  const roleTitle = normalizeTextForMatch(firstNonBlankString(person.roleTitle) ?? "");
+  const companyName = normalizeTextForMatch(firstNonBlankString(company.name) ?? "");
+  const domain = normalizeTextForMatch(firstNonBlankString(company.domain) ?? "");
+
+  const looksAgency = /\b(recruit|recruitment|staffing|talent|headhunt|search firm|executive search)\b/.test(
+    `${roleTitle} ${companyName} ${domain} ${text}`,
+  );
+
+  let region: string | null = null;
+  if (
+    /\b(spain|espana|madrid|barcelona|valencia|bilbao|malaga|sevilla|alicante|zaragoza|murcia|granada|vigo|palma|ibiza|canarias|tenerife)\b/.test(
+      text,
+    ) ||
+    domain.endsWith(".es")
+  ) {
+    region = "Spain";
+  } else if (/\b(europe|europa|european|emea|eu)\b/.test(text)) {
+    region = "Europe";
+  } else if (fallbackCountryCode === "es") {
+    region = "Spain";
+  }
+
+  if (!region) {
+    return null;
+  }
+
+  return {
+    recruiterType: looksAgency ? "agency" : "in_house",
+    region,
+  };
+}
+
 function coerceLeadShortlistOption(raw: unknown): MainShortlistOption | null {
   if (!isPlainRecord(raw)) {
     return null;
@@ -1461,6 +2197,7 @@ function coerceLeadShortlistOption(raw: unknown): MainShortlistOption | null {
   const summary = firstNonBlankString(raw.summary);
   const missedFilters = asNonEmptyTrimmedStringArray(raw.missedFilters);
   const reasons = asNonEmptyTrimmedStringArray(raw.reasons);
+  const leadProfile = coerceLeadProfile(raw.leadProfile);
 
   if (!candidate || !summary || !missedFilters || !reasons) {
     return null;
@@ -1471,6 +2208,8 @@ function coerceLeadShortlistOption(raw: unknown): MainShortlistOption | null {
     summary,
     missedFilters,
     reasons,
+    ...(leadProfile ? { leadProfile } : {}),
+    outreachPack: coerceOutreachPack(raw.outreachPack) ?? undefined,
   };
 }
 
@@ -1521,6 +2260,57 @@ function coerceLeadSearchTargetFilters(
   };
 }
 
+function coerceExplorationHints(raw: unknown): MainExplorationHints {
+  if (!isPlainRecord(raw)) {
+    return emptyExplorationHints();
+  }
+
+  const overusedQueries = Array.isArray(raw.overusedQueries)
+    ? raw.overusedQueries
+        .map((value) => {
+          if (!isPlainRecord(value)) {
+            return null;
+          }
+
+          const query = firstNonBlankString(value.query);
+          const count = asMaybeInteger(value.count);
+          if (!query || count === undefined || count <= 0) {
+            return null;
+          }
+
+          return { query, count };
+        })
+        .filter((value): value is { query: string; count: number } => value !== null)
+    : [];
+  const visitedUrls = Array.isArray(raw.visitedUrls)
+    ? [...new Set(raw.visitedUrls.map((value) => firstNonBlankString(value)).filter((value): value is string => value !== null))]
+    : [];
+  const visitedHosts = Array.isArray(raw.visitedHosts)
+    ? raw.visitedHosts
+        .map((value) => {
+          if (!isPlainRecord(value)) {
+            return null;
+          }
+
+          const host = firstNonBlankString(value.host);
+          const count = asMaybeInteger(value.count);
+          if (!host || count === undefined || count <= 0) {
+            return null;
+          }
+
+          return { host, count };
+        })
+        .filter((value): value is { host: string; count: number } => value !== null)
+    : [];
+
+  return {
+    overusedQueries,
+    visitedUrls,
+    visitedHosts,
+    consecutiveHardMissRuns: Math.max(asMaybeInteger(raw.consecutiveHardMissRuns) ?? 0, 0),
+  };
+}
+
 function coerceMainFlowState(raw: unknown): MainFlowState | null {
   if (!isPlainRecord(raw) || typeof raw.mode !== "string") {
     return null;
@@ -1561,6 +2351,7 @@ function coerceMainFlowState(raw: unknown): MainFlowState | null {
             .map((value) => coerceLeadShortlistOption(value))
             .filter((value): value is MainShortlistOption => value !== null)
         : [],
+      knownCompanyNames: asNonEmptyTrimmedStringArray(raw.knownCompanyNames) ?? [],
       seenCompanies: appendCompanyMatchKeys(
         [],
         asNonEmptyTrimmedStringArray(raw.seenCompanies) ?? [],
@@ -1569,7 +2360,28 @@ function coerceMainFlowState(raw: unknown): MainFlowState | null {
         [],
         asNonEmptyTrimmedStringArray(raw.seenLeadNames) ?? [],
       ),
+      explicitUrlTargets:
+        asNonEmptyTrimmedStringArray(raw.explicitUrlTargets)?.map((value) => normalizeTrackedUrl(value)) ?? [],
+      explicitCompanyTargets: appendCompanyMatchKeys(
+        [],
+        asNonEmptyTrimmedStringArray(raw.explicitCompanyTargets) ?? [],
+      ),
+      explorationHints: coerceExplorationHints(raw.explorationHints),
       currentCandidate: asCandidateRecord(raw.currentCandidate),
+      currentQualificationReasons: asNonEmptyTrimmedStringArray(raw.currentQualificationReasons) ?? [],
+      currentCloseMatch:
+        isPlainRecord(raw.currentCloseMatch) &&
+        firstNonBlankString(raw.currentCloseMatch.summary) &&
+        asNonEmptyTrimmedStringArray(raw.currentCloseMatch.missedFilters) &&
+        asNonEmptyTrimmedStringArray(raw.currentCloseMatch.reasons)
+          ? {
+              summary: firstNonBlankString(raw.currentCloseMatch.summary)!,
+              missedFilters: asNonEmptyTrimmedStringArray(raw.currentCloseMatch.missedFilters)!,
+              reasons: asNonEmptyTrimmedStringArray(raw.currentCloseMatch.reasons)!,
+            }
+          : null,
+      currentLeadProfile: coerceLeadProfile(raw.currentLeadProfile),
+      currentOutreachPack: coerceOutreachPack(raw.currentOutreachPack),
       currentMatchMode:
         typeof raw.currentMatchMode === "string" &&
         MAIN_MATCH_MODES.includes(raw.currentMatchMode as MainMatchMode)
@@ -1597,19 +2409,28 @@ function coerceMainFlowState(raw: unknown): MainFlowState | null {
     };
   }
 
+  if (raw.mode === "query_reset") {
+    return {
+      mode: "query_reset",
+      language: raw.language === "en" ? "en" : "es",
+      requestId: firstNonBlankString(raw.requestId) ?? shortId("query_reset"),
+      awaitingAction: firstNonBlankString(raw.awaitingAction) ?? null,
+    };
+  }
+
   return null;
 }
 
 function currentLeadMatchMode(attemptIndex: number): MainMatchMode {
-  if (attemptIndex <= 2) {
+  if (attemptIndex <= 0) {
     return "STRICT";
   }
 
-  if (attemptIndex <= 5) {
+  if (attemptIndex <= 2) {
     return "RELAX_SIZE";
   }
 
-  if (attemptIndex <= 8) {
+  if (attemptIndex <= 4) {
     return "RELAX_GEO";
   }
 
@@ -1647,6 +2468,16 @@ function candidateCompanyName(candidate: Record<string, unknown> | null): string
   return firstNonBlankString(company.name) ?? null;
 }
 
+function clearCurrentLeadContext(state: MainLeadSearchState): MainLeadSearchState {
+  state.currentCandidate = null;
+  state.currentQualificationReasons = [];
+  state.currentCloseMatch = null;
+  state.currentLeadProfile = null;
+  state.currentOutreachPack = null;
+  state.enrichRoundCount = 0;
+  return state;
+}
+
 function addSeenCandidate(
   state: MainLeadSearchState,
   candidate: Record<string, unknown> | null,
@@ -1662,6 +2493,149 @@ function addSeenCandidate(
     leadName ? [leadName] : undefined,
   );
   return state;
+}
+
+function extractTrackedHost(url: string): string | null {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./u, "");
+  } catch {
+    return null;
+  }
+}
+
+function deriveVisitedHostsFromUrls(urls: string[]): Array<{ host: string; count: number }> {
+  const usage = new Map<string, number>();
+
+  for (const url of urls) {
+    const host = extractTrackedHost(url);
+    if (!host) {
+      continue;
+    }
+
+    usage.set(host, (usage.get(host) ?? 0) + 1);
+  }
+
+  return [...usage.entries()]
+    .map(([host, count]) => ({ host, count }))
+    .sort((left, right) => {
+      if (right.count !== left.count) {
+        return right.count - left.count;
+      }
+
+      return left.host.localeCompare(right.host);
+    });
+}
+
+function deriveExplorationHintsFromCrmPayload(raw: unknown): MainExplorationHints {
+  if (!isPlainRecord(raw)) {
+    return emptyExplorationHints();
+  }
+
+  const queryHistory = Array.isArray(raw.queryHistory)
+    ? raw.queryHistory
+        .map((value) => {
+          if (!isPlainRecord(value)) {
+            return null;
+          }
+
+          const query = firstNonBlankString(value.query);
+          const normalizedQuery = firstNonBlankString(value.normalizedQuery) ?? query;
+          const usedAt = firstNonBlankString(value.usedAt);
+          if (!query || !normalizedQuery || !usedAt) {
+            return null;
+          }
+
+          return {
+            query,
+            normalizedQuery,
+            usedAt,
+          };
+        })
+        .filter(
+          (value): value is { query: string; normalizedQuery: string; usedAt: string } => value !== null,
+        )
+    : [];
+  const overusedQueries = deriveQueryUsage(queryHistory)
+    .slice(0, SOURCER_OVERUSED_QUERY_HINT_LIMIT)
+    .map(({ query, count }) => ({ query, count }));
+  const visitedUrls = Array.isArray(raw.visitedUrls)
+    ? raw.visitedUrls
+        .map((value) => {
+          if (!isPlainRecord(value)) {
+            return null;
+          }
+
+          return firstNonBlankString(value.normalizedUrl) ?? firstNonBlankString(value.url);
+        })
+        .filter((value): value is string => value !== null)
+    : [];
+  const uniqueVisitedUrls = [...new Set(visitedUrls.map((value) => normalizeTrackedUrl(value)).filter(Boolean))]
+    .slice(0, SOURCER_VISITED_URL_HINT_LIMIT);
+  const visitedHosts = deriveVisitedHostsFromUrls(uniqueVisitedUrls).slice(
+    0,
+    SOURCER_VISITED_HOST_HINT_LIMIT,
+  );
+
+  return {
+    overusedQueries,
+    visitedUrls: uniqueVisitedUrls,
+    visitedHosts,
+    consecutiveHardMissRuns: Math.max(asMaybeInteger(raw.consecutiveHardMissRuns) ?? 0, 0),
+  };
+}
+
+function findExplicitCompanyTargets(userText: string, companyNames: string[]): string[] {
+  if (!isNonBlankString(userText) || companyNames.length === 0) {
+    return [];
+  }
+
+  const normalizedUserText = normalizeName(userText);
+  const matches = companyNames.filter((companyName) =>
+    companyMatchKeys(companyName).some(
+      (key) => key.length > 0 && normalizedUserText.includes(key),
+    ),
+  );
+
+  return appendCompanyMatchKeys([], matches);
+}
+
+function buildFilteredExplorationHints(state: MainLeadSearchState): MainExplorationHints {
+  const explicitUrlTargets = new Set(state.explicitUrlTargets.map((value) => normalizeTrackedUrl(value)));
+  const filteredVisitedUrls = state.explorationHints.visitedUrls.filter(
+    (value) => !explicitUrlTargets.has(normalizeTrackedUrl(value)),
+  );
+
+  return {
+    overusedQueries: [...state.explorationHints.overusedQueries],
+    visitedUrls: filteredVisitedUrls.slice(0, SOURCER_VISITED_URL_HINT_LIMIT),
+    visitedHosts: deriveVisitedHostsFromUrls(filteredVisitedUrls).slice(0, SOURCER_VISITED_HOST_HINT_LIMIT),
+    consecutiveHardMissRuns: state.explorationHints.consecutiveHardMissRuns,
+  };
+}
+
+function buildExplicitCompanyExclusionKeys(state: MainLeadSearchState): string[] {
+  return appendCompanyMatchKeys([], state.explicitCompanyTargets);
+}
+
+function preferredCountryForLeadProfile(state: MainLeadSearchState): string | undefined {
+  if (state.currentMatchMode !== "STRICT" && state.currentMatchMode !== "RELAX_SIZE") {
+    return undefined;
+  }
+
+  const targetFilters = isPlainRecord(state.targetFilters) ? state.targetFilters : {};
+  return normalizeCountryCode(targetFilters.preferredCountry);
+}
+
+function resolveLeadProfile(
+  state: MainLeadSearchState,
+  candidate: Record<string, unknown> | null,
+  rawLeadProfile?: unknown,
+): MainLeadProfile | null {
+  return (
+    coerceLeadProfile(rawLeadProfile) ??
+    state.currentLeadProfile ??
+    deriveLeadProfile(candidate, preferredCountryForLeadProfile(state))
+  );
 }
 
 function isDuplicateCandidate(
@@ -1739,6 +2713,10 @@ function buildSourcerRequest(state: MainLeadSearchState): MainNextSendRequest {
     }
   }
 
+  const explicitCompanyKeys = new Set(buildExplicitCompanyExclusionKeys(state));
+  const excludedCompanyNames = state.seenCompanies.filter((value) => !explicitCompanyKeys.has(value));
+  const explorationHints = buildFilteredExplorationHints(state);
+
   state.awaitingAction = "SOURCE_ONE";
   return {
     sessionKey: "agent:sourcer:main",
@@ -1746,7 +2724,7 @@ function buildSourcerRequest(state: MainLeadSearchState): MainNextSendRequest {
     responseContract: "sourcer_response",
     expectedAction: "SOURCE_ONE",
     responseContext: {
-      excludedCompanyNames: state.seenCompanies,
+      excludedCompanyNames,
       excludedLeadNames: state.seenLeadNames,
     },
     payload: {
@@ -1754,8 +2732,37 @@ function buildSourcerRequest(state: MainLeadSearchState): MainNextSendRequest {
       runId: `${state.requestId}_source_${state.attemptIndex}`,
       campaignContext: {
         targetThemes,
+        ...(explorationHints.overusedQueries.length > 0 ||
+        explorationHints.visitedUrls.length > 0 ||
+        explorationHints.visitedHosts.length > 0
+          ? {
+              explorationHints: {
+                ...(explorationHints.overusedQueries.length > 0
+                  ? { overusedQueries: explorationHints.overusedQueries }
+                  : {}),
+                ...(explorationHints.visitedUrls.length > 0
+                  ? { visitedUrls: explorationHints.visitedUrls }
+                  : {}),
+                ...(explorationHints.visitedHosts.length > 0
+                  ? { visitedHosts: explorationHints.visitedHosts }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(state.explicitUrlTargets.length > 0 || state.explicitCompanyTargets.length > 0
+          ? {
+              requestOverrides: {
+                ...(state.explicitUrlTargets.length > 0
+                  ? { explicitTargetUrls: state.explicitUrlTargets }
+                  : {}),
+                ...(state.explicitCompanyTargets.length > 0
+                  ? { explicitTargetCompanyNames: state.explicitCompanyTargets }
+                  : {}),
+              },
+            }
+          : {}),
       },
-      excludedCompanyNames: state.seenCompanies,
+      excludedCompanyNames,
       excludedLeadNames: state.seenLeadNames,
       constraints,
     },
@@ -1822,10 +2829,65 @@ function buildEnrichRequest(
   };
 }
 
+function buildCommercialRequest(
+  state: MainLeadSearchState,
+  candidate: Record<string, unknown>,
+): MainNextSendRequest {
+  state.awaitingAction = "GENERATE_OUTREACH_PACK";
+  return {
+    sessionKey: "agent:commercial:main",
+    contract: "commercial_request",
+    responseContract: "commercial_response",
+    expectedAction: "GENERATE_OUTREACH_PACK",
+    responseContext: {
+      expectedCandidateId: candidate.candidateId,
+    },
+    payload: {
+      action: "GENERATE_OUTREACH_PACK",
+      runId: `${state.requestId}_commercial_${state.attemptIndex}_${state.enrichRoundCount}`,
+      candidate,
+      qualification: {
+        status: state.currentCloseMatch ? "REJECT" : "ACCEPT",
+        reasons:
+          state.currentQualificationReasons.length > 0
+            ? state.currentQualificationReasons
+            : ["Commercially relevant lead."],
+        ...(state.currentLeadProfile ? { leadProfile: state.currentLeadProfile } : {}),
+        ...(state.currentCloseMatch ? { closeMatch: state.currentCloseMatch } : {}),
+      },
+      channelRules: {
+        languageMode: "MATCH_LEAD_LANGUAGE",
+        connectionNote: {
+          maxChars: 200,
+          targetMinChars: 140,
+          targetMaxChars: 190,
+        },
+        dm: {
+          minChars: 320,
+          maxChars: 650,
+          paragraphCount: 3,
+        },
+        emailSubject: {
+          minWords: 2,
+          maxWords: 5,
+        },
+        emailBody: {
+          minWords: 70,
+          maxWords: 130,
+          minSentences: 3,
+          maxSentences: 5,
+        },
+      },
+    },
+  };
+}
+
 function buildRegisterAcceptedRequest(
   state: MainLeadSearchState,
   candidate: Record<string, unknown>,
   reasons: string[],
+  leadProfile?: MainLeadProfile | null,
+  outreachPack?: MainOutreachPack | null,
 ): MainNextSendRequest {
   const leadName = candidateLeadName(candidate);
   const companyName = candidateCompanyName(candidate);
@@ -1846,6 +2908,8 @@ function buildRegisterAcceptedRequest(
         status: "ACCEPT",
         reasons,
       },
+      ...(leadProfile ? { leadProfile } : {}),
+      ...(outreachPack ? { outreachPack } : {}),
       campaignStateUpdate: {
         searchedCompanyNamesAdd: companyName ? [companyName] : [],
         registeredLeadNamesAdd: leadName ? [leadName] : [],
@@ -1945,6 +3009,70 @@ function buildClearShortlistRequest(state: MainShortlistRegistrationState): Main
   };
 }
 
+function buildResetQueryMemoryRequest(state: MainQueryResetState): MainNextSendRequest {
+  state.awaitingAction = "RESET_QUERY_MEMORY";
+  return {
+    sessionKey: "agent:crm:main",
+    contract: "crm_request",
+    responseContract: "crm_response",
+    expectedAction: "RESET_QUERY_MEMORY",
+    responseContext: {
+      expectedAction: "RESET_QUERY_MEMORY",
+    },
+    payload: {
+      action: "RESET_QUERY_MEMORY",
+      runId: `${state.requestId}_reset`,
+    },
+  };
+}
+
+function buildRegisterSourceTraceRequest(
+  requestId: string,
+  attemptIndex: number,
+  sourceTrace: {
+    queries: string[];
+    fetchedUrls: string[];
+    evidenceUrls: string[];
+  },
+): MainNextSendRequest {
+  return {
+    sessionKey: "agent:crm:main",
+    contract: "crm_request",
+    responseContract: "crm_response",
+    expectedAction: "REGISTER_SOURCE_TRACE",
+    responseContext: {
+      expectedAction: "REGISTER_SOURCE_TRACE",
+    },
+    payload: {
+      action: "REGISTER_SOURCE_TRACE",
+      runId: `${requestId}_trace_${attemptIndex}`,
+      sourceTrace,
+    },
+  };
+}
+
+function buildRegisterSearchRunResultRequest(
+  requestId: string,
+  outcome: "SUCCESS" | "SOFT_MISS" | "HARD_MISS",
+): MainNextSendRequest {
+  return {
+    sessionKey: "agent:crm:main",
+    contract: "crm_request",
+    responseContract: "crm_response",
+    expectedAction: "REGISTER_SEARCH_RUN_RESULT",
+    responseContext: {
+      expectedAction: "REGISTER_SEARCH_RUN_RESULT",
+    },
+    payload: {
+      action: "REGISTER_SEARCH_RUN_RESULT",
+      runId: `${requestId}_run_result`,
+      result: {
+        outcome,
+      },
+    },
+  };
+}
+
 function buildRegisterShortlistOptionRequest(
   state: MainShortlistRegistrationState,
   optionIndex: number,
@@ -1980,6 +3108,20 @@ function buildRegisterShortlistOptionRequest(
           asNonEmptyTrimmedStringArray(option.reasons) ??
           ["User approved a near-match shortlisted lead."],
       },
+      ...(coerceLeadProfile(isPlainRecord(option) ? option.leadProfile : undefined)
+        ? {
+            leadProfile: coerceLeadProfile(
+              isPlainRecord(option) ? option.leadProfile : undefined,
+            ),
+          }
+        : {}),
+      ...(coerceOutreachPack(isPlainRecord(option) ? option.outreachPack : undefined)
+        ? {
+            outreachPack: coerceOutreachPack(
+              isPlainRecord(option) ? option.outreachPack : undefined,
+            ),
+          }
+        : {}),
       campaignStateUpdate: {
         searchedCompanyNamesAdd: candidateCompanyName(candidate)
           ? [candidateCompanyName(candidate)!]
@@ -2032,6 +3174,18 @@ function buildNoLeadMessage(language: MainLanguage): string {
     : "I did not find any lead with those criteria. If you want, I can try again.";
 }
 
+function buildNoLeadWithResetSuggestionMessage(language: MainLanguage): string {
+  return language === "es"
+    ? 'No encontrÃ© ningÃºn lead con esas caracterÃ­sticas tras varios intentos seguidos. Si quieres, puedo resetear solo la memoria de queries para abrir nuevos Ã¡ngulos. Responde con "resetea las queries".'
+    : 'I did not find any lead with those criteria after several consecutive attempts. If you want, I can reset only the query memory to open new search angles. Reply with "reset the queries".';
+}
+
+function buildQueryResetDoneMessage(language: MainLanguage): string {
+  return language === "es"
+    ? "He reseteado la memoria de queries. Mantengo las URLs ya visitadas y ya puedes volver a lanzar la bÃºsqueda."
+    : "I reset the query memory. The visited URLs stay persisted, and you can run the search again.";
+}
+
 function buildNoShortlistMessage(language: MainLanguage): string {
   return language === "es"
     ? "No hay ninguna shortlist pendiente."
@@ -2045,8 +3199,7 @@ function buildInvalidSelectionMessage(language: MainLanguage): string {
 }
 
 function nextLeadSearchAttemptOrFinal(state: MainLeadSearchState): MainNextActionResult {
-  state.currentCandidate = null;
-  state.enrichRoundCount = 0;
+  clearCurrentLeadContext(state);
 
   if (state.attemptIndex + 1 >= state.attemptBudget) {
     if (state.shortlistOptions.length > 0) {
@@ -2101,6 +3254,49 @@ function handleLeadSearchResponse(
       return buildFailure(state.language);
     }
 
+    if (state.awaitingAction === "GENERATE_OUTREACH_PACK") {
+      const candidate = state.currentCandidate;
+      if (!candidate) {
+        return nextLeadSearchAttemptOrFinal(state);
+      }
+
+      const fallbackOutreachPack = buildFriendlyFallbackOutreachPack(
+        state.language,
+        candidate,
+        state.currentQualificationReasons.length > 0
+          ? state.currentQualificationReasons
+          : state.currentCloseMatch?.reasons ?? ["Accepted by qualifier."],
+      );
+
+      if (state.currentCloseMatch && state.shortlistOptions.length < MAX_SHORTLIST_OPTIONS) {
+        state.shortlistOptions.push({
+          candidate,
+          summary: state.currentCloseMatch.summary,
+          missedFilters: [...state.currentCloseMatch.missedFilters],
+          reasons: [...state.currentCloseMatch.reasons],
+          ...(state.currentLeadProfile ? { leadProfile: state.currentLeadProfile } : {}),
+          outreachPack: fallbackOutreachPack,
+        });
+        addSeenCandidate(state, candidate);
+        return nextLeadSearchAttemptOrFinal(state);
+      }
+
+      return {
+        ok: true,
+        outcome: "send_request",
+        state,
+        request: buildRegisterAcceptedRequest(
+          state,
+          candidate,
+          state.currentQualificationReasons.length > 0
+            ? state.currentQualificationReasons
+            : ["Accepted by qualifier."],
+          state.currentLeadProfile,
+          fallbackOutreachPack,
+        ),
+      };
+    }
+
     if (state.awaitingAction === "QUALIFY_ONE" || state.awaitingAction === "ENRICH_ONE") {
       addSeenCandidate(state, state.currentCandidate);
     }
@@ -2116,11 +3312,19 @@ function handleLeadSearchResponse(
 
     if (state.awaitingAction === "GET_CAMPAIGN_STATE") {
       const campaignState = isPlainRecord(parsed.campaignState) ? parsed.campaignState : {};
+      const searchedCompanyNames =
+        asNonEmptyTrimmedStringArray(campaignState.searchedCompanyNames) ?? [];
       state.seenCompanies = appendCompanyMatchKeys(
         [],
-        asNonEmptyTrimmedStringArray(campaignState.searchedCompanyNames) ?? [],
+        searchedCompanyNames,
       );
       state.seenLeadNames = asNonEmptyTrimmedStringArray(campaignState.registeredLeadNames) ?? [];
+      state.knownCompanyNames = searchedCompanyNames;
+      state.explicitCompanyTargets = findExplicitCompanyTargets(
+        state.originalRequestSummary,
+        searchedCompanyNames,
+      );
+      state.explorationHints = deriveExplorationHintsFromCrmPayload(parsed.explorationMemory);
       return {
         ok: true,
         outcome: "send_request",
@@ -2143,6 +3347,7 @@ function handleLeadSearchResponse(
         }
         addSeenCandidate(state, candidate);
       }
+      clearCurrentLeadContext(state);
 
       if (state.acceptedLeads.length >= state.requestedLeadCount) {
         return buildFinalResult(
@@ -2183,6 +3388,9 @@ function handleLeadSearchResponse(
         return nextLeadSearchAttemptOrFinal(state);
       }
 
+      state.currentQualificationReasons = [];
+      state.currentCloseMatch = null;
+      state.currentOutreachPack = null;
       state.currentCandidate = candidate;
       if (state.awaitingAction === "ENRICH_ONE") {
         return {
@@ -2217,31 +3425,40 @@ function handleLeadSearchResponse(
     }
 
     if (parsed.status === "ACCEPT") {
+      state.currentQualificationReasons =
+        asNonEmptyTrimmedStringArray(isPlainRecord(parsed.decision) ? parsed.decision.reasons : undefined) ??
+        ["Accepted by qualifier."];
+      state.currentCloseMatch = null;
+      state.currentLeadProfile = resolveLeadProfile(state, candidate, parsed.leadProfile);
+      state.currentOutreachPack = null;
       return {
         ok: true,
         outcome: "send_request",
         state,
-        request: buildRegisterAcceptedRequest(
-          state,
-          candidate,
-          asNonEmptyTrimmedStringArray(isPlainRecord(parsed.decision) ? parsed.decision.reasons : undefined) ??
-            ["Accepted by qualifier."],
-        ),
+        request: buildCommercialRequest(state, candidate),
       };
     }
 
     if (parsed.status === "REJECT") {
       if (isPlainRecord(parsed.closeMatch) && state.shortlistOptions.length < MAX_SHORTLIST_OPTIONS) {
-        state.shortlistOptions.push({
-          candidate,
+        state.currentQualificationReasons =
+          asNonEmptyTrimmedStringArray(isPlainRecord(parsed.decision) ? parsed.decision.reasons : undefined) ??
+          ["Rejected by qualifier."];
+        state.currentCloseMatch = {
           summary: firstNonBlankString(parsed.closeMatch.summary) ?? "Strong close match.",
           missedFilters:
             asNonEmptyTrimmedStringArray(parsed.closeMatch.missedFilters) ?? ["requested filters"],
           reasons:
             asNonEmptyTrimmedStringArray(parsed.closeMatch.reasons) ?? ["Strong lead with a near miss."],
-        });
-        addSeenCandidate(state, candidate);
-        return nextLeadSearchAttemptOrFinal(state);
+        };
+        state.currentLeadProfile = resolveLeadProfile(state, candidate, parsed.leadProfile);
+        state.currentOutreachPack = null;
+        return {
+          ok: true,
+          outcome: "send_request",
+          state,
+          request: buildCommercialRequest(state, candidate),
+        };
       }
 
       return {
@@ -2275,6 +3492,53 @@ function handleLeadSearchResponse(
         ),
       };
     }
+  }
+
+  if (latestResult.contract === "commercial_response") {
+    const parsed = latestResult.parsed;
+    const candidate = state.currentCandidate;
+    if (!candidate) {
+      return nextLeadSearchAttemptOrFinal(state);
+    }
+
+    const outreachPack =
+      (parsed.status === "READY" ? coerceOutreachPack(parsed.outreachPack) : null) ??
+      buildFriendlyFallbackOutreachPack(
+        state.language,
+        candidate,
+        state.currentQualificationReasons.length > 0
+          ? state.currentQualificationReasons
+          : state.currentCloseMatch?.reasons ?? ["Accepted by qualifier."],
+      );
+
+    if (state.currentCloseMatch && state.shortlistOptions.length < MAX_SHORTLIST_OPTIONS) {
+      state.shortlistOptions.push({
+        candidate,
+        summary: state.currentCloseMatch.summary,
+        missedFilters: [...state.currentCloseMatch.missedFilters],
+        reasons: [...state.currentCloseMatch.reasons],
+        ...(state.currentLeadProfile ? { leadProfile: state.currentLeadProfile } : {}),
+        outreachPack,
+      });
+      addSeenCandidate(state, candidate);
+      return nextLeadSearchAttemptOrFinal(state);
+    }
+
+    state.currentOutreachPack = outreachPack;
+    return {
+      ok: true,
+      outcome: "send_request",
+      state,
+      request: buildRegisterAcceptedRequest(
+        state,
+        candidate,
+        state.currentQualificationReasons.length > 0
+          ? state.currentQualificationReasons
+          : ["Accepted by qualifier."],
+        state.currentLeadProfile,
+        outreachPack,
+      ),
+    };
   }
 
   return buildFailure(state.language);
@@ -2392,6 +3656,35 @@ function handleShortlistRegistrationResponse(
   return buildFailure(state.language);
 }
 
+function handleQueryResetResponse(
+  state: MainQueryResetState,
+  latestResult: MainWorkerResult | undefined,
+): MainNextActionResult {
+  if (!latestResult) {
+    return {
+      ok: true,
+      outcome: "send_request",
+      state,
+      request: buildResetQueryMemoryRequest(state),
+    };
+  }
+
+  if (!latestResult.ok || latestResult.status !== "VALID" || !latestResult.parsed) {
+    return buildFailure(state.language);
+  }
+
+  if (latestResult.contract !== "crm_response") {
+    return buildFailure(state.language);
+  }
+
+  const parsed = latestResult.parsed;
+  if (parsed.status === "ERROR") {
+    return buildFailure(state.language);
+  }
+
+  return buildFinalResult(state, "INSERTED", buildQueryResetDoneMessage(state.language));
+}
+
 export function planProspectingMainNextAction(input: {
   userText?: string;
   state?: Record<string, unknown>;
@@ -2415,6 +3708,16 @@ export function planProspectingMainNextAction(input: {
       };
     }
 
+    if (isQueryResetRequest(input.userText)) {
+      const resetState = initialQueryResetState(input.userText);
+      return {
+        ok: true,
+        outcome: "send_request",
+        state: resetState,
+        request: buildResetQueryMemoryRequest(resetState),
+      };
+    }
+
     return handleLeadSearchResponse(initialLeadSearchState(input.userText), undefined);
   }
 
@@ -2422,10 +3725,14 @@ export function planProspectingMainNextAction(input: {
     return handleLeadSearchResponse(existingState, latestResult ?? undefined);
   }
 
-  return handleShortlistRegistrationResponse(existingState, latestResult ?? undefined);
+  if (existingState.mode === "shortlist_registration") {
+    return handleShortlistRegistrationResponse(existingState, latestResult ?? undefined);
+  }
+
+  return handleQueryResetResponse(existingState, latestResult ?? undefined);
 }
 
-type DirectWorkerAgentId = "crm" | "sourcer" | "qualifier";
+type DirectWorkerAgentId = "crm" | "sourcer" | "qualifier" | "commercial";
 
 type ProspectingMainRunTrace = {
   hop: number;
@@ -2454,7 +3761,12 @@ type ProspectingMainRunOptions = {
 
 function directWorkerAgentIdFromRequest(request: MainNextSendRequest): DirectWorkerAgentId {
   const agentId = request.sessionKey.split(":")[1];
-  if (agentId === "crm" || agentId === "sourcer" || agentId === "qualifier") {
+  if (
+    agentId === "crm" ||
+    agentId === "sourcer" ||
+    agentId === "qualifier" ||
+    agentId === "commercial"
+  ) {
     return agentId;
   }
 
@@ -2562,6 +3874,18 @@ async function executeDirectWorkerHop(
 ): Promise<MainWorkerResult> {
   const agentId = directWorkerAgentIdFromRequest(request);
   const sessionKey = request.sessionKey;
+  const transportTimeoutSeconds = Math.min(
+    options.workerTimeoutSeconds,
+    agentId === "sourcer" ? 60 : 45,
+  );
+  const maxRuntimeMs = Math.min(
+    options.workerMaxRuntimeMs,
+    agentId === "sourcer" ? 150000 : 90000,
+  );
+  const idleTimeoutMs = Math.min(
+    options.workerIdleTimeoutMs,
+    agentId === "sourcer" ? 20000 : 15000,
+  );
 
   resetAgentSession({ sessionKey });
 
@@ -2630,7 +3954,7 @@ async function executeDirectWorkerHop(
         payloadText,
         "--json",
         "--timeout",
-        String(options.workerTimeoutSeconds),
+        String(transportTimeoutSeconds),
       ],
       {
         maxBuffer: 1024 * 1024 * 8,
@@ -2659,9 +3983,9 @@ async function executeDirectWorkerHop(
     sessionKey,
     runId: requestRunId,
     expectedAction: request.expectedAction,
-    timeoutMs: options.workerIdleTimeoutMs,
+    timeoutMs: idleTimeoutMs,
     pollIntervalMs: 1000,
-    maxRuntimeMs: options.workerMaxRuntimeMs,
+    maxRuntimeMs,
   });
 
   if (!awaitResult.ok) {
@@ -2676,6 +4000,88 @@ async function executeDirectWorkerHop(
   return validateResponsePayload(awaitResult.payloadText);
 }
 
+function extractEvidenceUrlsFromWorkerResult(workerResult: MainWorkerResult): string[] {
+  if (
+    workerResult.contract !== "sourcer_response" ||
+    !workerResult.ok ||
+    workerResult.status !== "VALID" ||
+    !isPlainRecord(workerResult.parsed) ||
+    workerResult.parsed.status !== "FOUND" ||
+    !isPlainRecord(workerResult.parsed.candidate) ||
+    !Array.isArray(workerResult.parsed.candidate.evidence)
+  ) {
+    return [];
+  }
+
+  return workerResult.parsed.candidate.evidence
+    .map((value) => (isPlainRecord(value) ? firstNonBlankString(value.url) : null))
+    .filter((value): value is string => value !== null);
+}
+
+async function registerSourcerTraceIfAvailable(
+  request: MainNextSendRequest,
+  workerResult: MainWorkerResult,
+  state: MainLeadSearchState,
+  options: ProspectingMainRunOptions,
+  trace: ProspectingMainRunTrace[],
+): Promise<void> {
+  if (request.expectedAction !== "SOURCE_ONE" && request.expectedAction !== "ENRICH_ONE") {
+    return;
+  }
+
+  const requestRunId = firstNonBlankString(request.payload.runId);
+  const sourceTrace = readRunScopedToolTrace({
+    sessionKey: request.sessionKey,
+    runId: requestRunId,
+    expectedAction: request.expectedAction,
+  });
+
+  const evidenceUrls = extractEvidenceUrlsFromWorkerResult(workerResult);
+  const queries = sourceTrace?.queries ?? [];
+  const fetchedUrls = sourceTrace?.fetchedUrls ?? [];
+
+  if (queries.length === 0 && fetchedUrls.length === 0 && evidenceUrls.length === 0) {
+    return;
+  }
+
+  const crmRequest = buildRegisterSourceTraceRequest(state.requestId, state.attemptIndex, {
+    queries,
+    fetchedUrls,
+    evidenceUrls,
+  });
+  const crmResult = await executeDirectWorkerHop(crmRequest, options);
+  trace.push({
+    hop: trace.length + 1,
+    agentId: "crm",
+    action: crmRequest.expectedAction,
+    contract: crmRequest.responseContract,
+    ok: crmResult.ok,
+    status: crmResult.status,
+    error: crmResult.error,
+  });
+}
+
+async function registerSearchRunOutcome(
+  requestId: string,
+  outcome: "SUCCESS" | "SOFT_MISS" | "HARD_MISS",
+  options: ProspectingMainRunOptions,
+  trace: ProspectingMainRunTrace[],
+): Promise<MainWorkerResult> {
+  const crmRequest = buildRegisterSearchRunResultRequest(requestId, outcome);
+  const crmResult = await executeDirectWorkerHop(crmRequest, options);
+  trace.push({
+    hop: trace.length + 1,
+    agentId: "crm",
+    action: crmRequest.expectedAction,
+    contract: crmRequest.responseContract,
+    ok: crmResult.ok,
+    status: crmResult.status,
+    error: crmResult.error,
+  });
+
+  return crmResult;
+}
+
 async function runProspectingMainWorkflow(
   userText: string,
   options: ProspectingMainRunOptions,
@@ -2685,10 +4091,37 @@ async function runProspectingMainWorkflow(
 
   for (let hop = 0; hop < options.maxHops; hop += 1) {
     if (nextAction.outcome === "final") {
+      let userMessage = nextAction.userMessage;
+
+      if (nextAction.ok && nextAction.state?.mode === "lead_search") {
+        const requestId = nextAction.state.requestId;
+        let outcomeResult: MainWorkerResult | null = null;
+
+        if (nextAction.finalType === "INSERTED") {
+          outcomeResult = await registerSearchRunOutcome(requestId, "SUCCESS", options, trace);
+        } else if (nextAction.finalType === "SHORTLIST") {
+          outcomeResult = await registerSearchRunOutcome(requestId, "SOFT_MISS", options, trace);
+        } else if (nextAction.finalType === "NO_LEAD") {
+          outcomeResult = await registerSearchRunOutcome(requestId, "HARD_MISS", options, trace);
+          if (
+            outcomeResult.ok &&
+            outcomeResult.status === "VALID" &&
+            isPlainRecord(outcomeResult.parsed) &&
+            isPlainRecord(outcomeResult.parsed.explorationMemory) &&
+            Math.max(
+              asMaybeInteger(outcomeResult.parsed.explorationMemory.consecutiveHardMissRuns) ?? 0,
+              0,
+            ) >= HARD_MISS_RESET_THRESHOLD
+          ) {
+            userMessage = buildNoLeadWithResetSuggestionMessage(nextAction.state.language);
+          }
+        }
+      }
+
       return {
         ok: nextAction.ok,
         finalType: nextAction.finalType,
-        userMessage: nextAction.userMessage,
+        userMessage,
         trace,
         state: nextAction.ok ? nextAction.state : undefined,
       };
@@ -2705,6 +4138,16 @@ async function runProspectingMainWorkflow(
       status: workerResult.status,
       error: workerResult.error,
     });
+
+    if (nextAction.state.mode === "lead_search" && nextAction.request.responseContract === "sourcer_response") {
+      await registerSourcerTraceIfAvailable(
+        nextAction.request,
+        workerResult,
+        nextAction.state,
+        options,
+        trace,
+      );
+    }
 
     nextAction = planProspectingMainNextAction({
       state: nextAction.state,
@@ -2772,6 +4215,28 @@ function currentCampaignStatePayload() {
       searchedCompanyNames: state.searchedCompanyNames,
       registeredLeadNames: state.registeredLeadNames,
     },
+    explorationMemory: state.explorationMemory,
+  };
+}
+
+function buildStatefulCrmOkResponse(
+  action:
+    | "GET_CAMPAIGN_STATE"
+    | "REGISTER_ACCEPTED_LEAD"
+    | "REGISTER_REJECTED_CANDIDATE"
+    | "REGISTER_SOURCE_TRACE"
+    | "REGISTER_SEARCH_RUN_RESULT"
+    | "RESET_QUERY_MEMORY",
+  state: ReturnType<typeof loadState>,
+) {
+  return {
+    status: "OK" as const,
+    action,
+    campaignState: {
+      searchedCompanyNames: state.searchedCompanyNames,
+      registeredLeadNames: state.registeredLeadNames,
+    },
+    explorationMemory: state.explorationMemory,
   };
 }
 
@@ -2830,24 +4295,69 @@ async function registerAcceptedLeadAction(params: {
     notes: string | null;
   };
   decision: { reasons: string[] };
+  leadProfile?: MainLeadProfile;
+  outreachPack?: MainOutreachPack;
   campaignStateUpdate: {
     searchedCompanyNamesAdd: string[];
     registeredLeadNamesAdd: string[];
   };
 }, client: NotionRecruiterClient) {
-  const name = requireAcceptedLeadPersonName(params.candidate.person.fullName);
-  const company = requireCompanyName(params.candidate.company.name);
+  const name = requireCleanHumanText(
+    repairCommonMojibake(requireAcceptedLeadPersonName(params.candidate.person.fullName)),
+    "candidate.person.fullName",
+  );
+  const company = requireCleanHumanText(
+    repairCommonMojibake(requireCompanyName(params.candidate.company.name)),
+    "candidate.company.name",
+  );
+  const role = normalizeStoredText(params.candidate.person.roleTitle);
+  const notes = normalizeOptionalStoredText(params.candidate.notes);
+  const reasons = normalizeStoredStringArray(params.decision.reasons);
+  const outreachPack = coerceOutreachPack(params.outreachPack);
+  const normalizedOutreachPack = outreachPack
+    ? {
+        sourceNotes: repairCommonMojibake(outreachPack.sourceNotes),
+        hook1: repairCommonMojibake(outreachPack.hook1),
+        hook2: repairCommonMojibake(outreachPack.hook2),
+        fitSummary: repairCommonMojibake(outreachPack.fitSummary),
+        connectionNoteDraft: repairCommonMojibake(outreachPack.connectionNoteDraft),
+        dmDraft: repairCommonMojibake(outreachPack.dmDraft),
+        emailSubjectDraft: repairCommonMojibake(outreachPack.emailSubjectDraft),
+        emailBodyDraft: repairCommonMojibake(outreachPack.emailBodyDraft),
+        nextActionType: outreachPack.nextActionType,
+      }
+    : null;
+  const resolvedLeadProfile =
+    coerceLeadProfile(params.leadProfile) ?? deriveLeadProfile(params.candidate as Record<string, unknown>);
+  const schema = await client.loadNotionSchema(true);
+  const defaultCvFields = {
+    ...(schema.propertiesByKey.cvSent ? { cvSent: DEFAULT_CV_SENT } : {}),
+    ...(schema.propertiesByKey.cvUrl ? { cvUrl: DEFAULT_CV_URL } : {}),
+    ...(schema.propertiesByKey.cvUrlEn ? { cvUrlEn: DEFAULT_CV_URL_EN } : {}),
+    ...(schema.propertiesByKey.cvUrlEs ? { cvUrlEs: DEFAULT_CV_URL_ES } : {}),
+  };
 
   await client.upsertRecruiter({
     name,
     linkedinUrl: normalizeOptionalLinkedInUrl(params.candidate.person.linkedinUrl),
     company,
-    role: params.candidate.person.roleTitle ?? undefined,
+    role: role ? requireCleanHumanText(role, "candidate.person.roleTitle") : undefined,
+    recruiterType: resolvedLeadProfile?.recruiterType,
+    region: resolvedLeadProfile?.region,
     fitScore: 95,
     status: DEFAULT_STATUS,
-    sourceNotes: buildAcceptedLeadSourceNotes(params.decision.reasons, params.candidate.evidence),
-    fitSummary: params.candidate.notes ?? params.decision.reasons.join(" "),
-    nextActionType: DEFAULT_NEXT_ACTION_TYPE,
+    sourceNotes:
+      normalizedOutreachPack?.sourceNotes ??
+      repairCommonMojibake(buildAcceptedLeadSourceNotes(reasons, params.candidate.evidence)),
+    hook1: normalizedOutreachPack?.hook1,
+    hook2: normalizedOutreachPack?.hook2,
+    fitSummary: normalizedOutreachPack?.fitSummary ?? notes ?? reasons.join(" "),
+    connectionNoteDraft: normalizedOutreachPack?.connectionNoteDraft,
+    dmDraft: normalizedOutreachPack?.dmDraft,
+    emailSubjectDraft: normalizedOutreachPack?.emailSubjectDraft,
+    emailBodyDraft: normalizedOutreachPack?.emailBodyDraft,
+    nextActionType: normalizedOutreachPack?.nextActionType ?? DEFAULT_NEXT_ACTION_TYPE,
+    ...defaultCvFields,
   });
 
   const state = loadState();
@@ -2863,12 +4373,7 @@ async function registerAcceptedLeadAction(params: {
   saveState(state);
 
   return {
-    status: "OK",
-    action: "REGISTER_ACCEPTED_LEAD",
-    campaignState: {
-      searchedCompanyNames: state.searchedCompanyNames,
-      registeredLeadNames: state.registeredLeadNames,
-    },
+    ...buildStatefulCrmOkResponse("REGISTER_ACCEPTED_LEAD", state),
   };
 }
 
@@ -2891,12 +4396,68 @@ async function registerRejectedCandidateAction(params: {
   saveState(state);
 
   return {
-    status: "OK",
-    action: "REGISTER_REJECTED_CANDIDATE",
-    campaignState: {
-      searchedCompanyNames: state.searchedCompanyNames,
-      registeredLeadNames: state.registeredLeadNames,
-    },
+    ...buildStatefulCrmOkResponse("REGISTER_REJECTED_CANDIDATE", state),
+  };
+}
+
+async function registerSourceTraceAction(params: {
+  sourceTrace: {
+    queries: string[];
+    fetchedUrls: string[];
+    evidenceUrls: string[];
+  };
+}) {
+  const state = loadState();
+  const now = new Date().toISOString();
+
+  state.explorationMemory.queryHistory = appendQueryHistory(
+    state.explorationMemory.queryHistory,
+    params.sourceTrace.queries,
+    now,
+  );
+  state.explorationMemory.visitedUrls = appendVisitedUrls(
+    state.explorationMemory.visitedUrls,
+    [
+      ...params.sourceTrace.fetchedUrls.map((url) => ({ url, source: "fetch" as const, seenAt: now })),
+      ...params.sourceTrace.evidenceUrls.map((url) => ({ url, source: "evidence" as const, seenAt: now })),
+    ],
+  );
+  state.updatedAt = now;
+  saveState(state);
+
+  return {
+    ...buildStatefulCrmOkResponse("REGISTER_SOURCE_TRACE", state),
+  };
+}
+
+async function registerSearchRunResultAction(params: {
+  result: {
+    outcome: "SUCCESS" | "SOFT_MISS" | "HARD_MISS";
+  };
+}) {
+  const state = loadState();
+  if (params.result.outcome === "HARD_MISS") {
+    state.explorationMemory.consecutiveHardMissRuns += 1;
+  } else {
+    state.explorationMemory.consecutiveHardMissRuns = 0;
+  }
+  state.updatedAt = new Date().toISOString();
+  saveState(state);
+
+  return {
+    ...buildStatefulCrmOkResponse("REGISTER_SEARCH_RUN_RESULT", state),
+  };
+}
+
+async function resetQueryMemoryAction() {
+  const state = loadState();
+  state.explorationMemory.queryHistory = [];
+  state.explorationMemory.consecutiveHardMissRuns = 0;
+  state.updatedAt = new Date().toISOString();
+  saveState(state);
+
+  return {
+    ...buildStatefulCrmOkResponse("RESET_QUERY_MEMORY", state),
   };
 }
 
@@ -2915,6 +4476,8 @@ async function savePendingShortlistAction(params: {
       summary: string;
       missedFilters: string[];
       reasons: string[];
+      leadProfile?: MainLeadProfile;
+      outreachPack?: MainOutreachPack;
     }>;
   };
 }) {
@@ -2953,11 +4516,12 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
     parameters: ProspectingCrmGetCampaignStateSchema,
     async execute() {
       return executeTool(async () => {
-        const { campaignState } = currentCampaignStatePayload();
+        const { campaignState, explorationMemory } = currentCampaignStatePayload();
         return createJsonResult({
           status: "OK",
           action: "GET_CAMPAIGN_STATE",
           campaignState,
+          explorationMemory,
         });
       });
     },
@@ -2980,6 +4544,8 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
             notes: string | null;
           };
           decision: { reasons: string[] };
+          leadProfile?: MainLeadProfile;
+          outreachPack?: MainOutreachPack;
           campaignStateUpdate: {
             searchedCompanyNamesAdd: string[];
             registeredLeadNamesAdd: string[];
@@ -3016,6 +4582,64 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
   });
 
   api.registerTool({
+    name: "prospecting_crm_register_source_trace",
+    label: "Prospecting CRM Register Source Trace",
+    description:
+      "Persist the sourcer tool trace for the current attempt and return the exact CRM contract payload.",
+    parameters: ProspectingCrmRegisterSourceTraceSchema,
+    async execute(_toolCallId, rawParams) {
+      return executeTool(async () => {
+        const params = rawParams as {
+          sourceTrace: {
+            queries: string[];
+            fetchedUrls: string[];
+            evidenceUrls: string[];
+          };
+        };
+
+        return createJsonResult(
+          await registerSourceTraceAction(params) as Record<string, unknown>,
+        );
+      });
+    },
+  });
+
+  api.registerTool({
+    name: "prospecting_crm_register_search_run_result",
+    label: "Prospecting CRM Register Search Run Result",
+    description:
+      "Persist the final search-run outcome and return the exact CRM contract payload.",
+    parameters: ProspectingCrmRegisterSearchRunResultSchema,
+    async execute(_toolCallId, rawParams) {
+      return executeTool(async () => {
+        const params = rawParams as {
+          result: {
+            outcome: "SUCCESS" | "SOFT_MISS" | "HARD_MISS";
+          };
+        };
+
+        return createJsonResult(
+          await registerSearchRunResultAction(params) as Record<string, unknown>,
+        );
+      });
+    },
+  });
+
+  api.registerTool({
+    name: "prospecting_crm_reset_query_memory",
+    label: "Prospecting CRM Reset Query Memory",
+    description:
+      "Clear the rolling query memory while preserving visited URLs and return the exact CRM contract payload.",
+    parameters: ProspectingCrmResetQueryMemorySchema,
+    async execute() {
+      return executeTool(async () =>
+        createJsonResult(
+          await resetQueryMemoryAction() as Record<string, unknown>,
+        ));
+    },
+  });
+
+  api.registerTool({
     name: "prospecting_crm_save_pending_shortlist",
     label: "Prospecting CRM Save Pending Shortlist",
     description:
@@ -3042,6 +4666,8 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
               summary: string;
               missedFilters: string[];
               reasons: string[];
+              leadProfile?: MainLeadProfile;
+              outreachPack?: MainOutreachPack;
             }>;
           };
         };
@@ -3099,6 +4725,7 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
             searchedCompanyNames: state.searchedCompanyNames,
             registeredLeadNames: state.registeredLeadNames,
           },
+          explorationMemory: state.explorationMemory,
           updatedAt: state.updatedAt,
         });
       });
@@ -3135,6 +4762,7 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
             searchedCompanyNames: state.searchedCompanyNames,
             registeredLeadNames: state.registeredLeadNames,
           },
+          explorationMemory: state.explorationMemory,
           updatedAt: state.updatedAt,
         });
       });
@@ -3159,9 +4787,9 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
 
         return createJsonResult(
           await runProspectingMainWorkflow(params.userText, {
-            workerTimeoutSeconds: params.workerTimeoutSeconds ?? 600,
-            workerIdleTimeoutMs: params.workerIdleTimeoutMs ?? 45000,
-            workerMaxRuntimeMs: params.workerMaxRuntimeMs ?? 600000,
+            workerTimeoutSeconds: params.workerTimeoutSeconds ?? 90,
+            workerIdleTimeoutMs: params.workerIdleTimeoutMs ?? 20000,
+            workerMaxRuntimeMs: params.workerMaxRuntimeMs ?? 150000,
             maxHops: params.maxHops ?? 80,
           }) as unknown as Record<string, unknown>,
         );
@@ -3450,28 +5078,39 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
         api.logger.debug?.(
           `[notion-recruiter-crm] notion_recruiter_upsert raw params ${JSON.stringify(rawParams)}`,
         );
+        const normalizedName = requireCleanHumanText(
+          repairCommonMojibake(params.name),
+          "name",
+        );
+        const normalizedCompany = normalizeOptionalStoredText(params.company);
+        const normalizedRole = normalizeOptionalStoredText(params.role);
         const normalizedInput = {
-          name: params.name.trim(),
+          name: normalizedName,
           linkedinUrl: normalizeOptionalLinkedInUrl(params.linkedinUrl),
-          company: params.company,
-          role: params.role,
+          company:
+            normalizedCompany !== undefined && normalizedCompany !== null
+              ? requireCleanHumanText(normalizedCompany, "company")
+              : normalizedCompany,
+          role:
+            normalizedRole !== undefined && normalizedRole !== null
+              ? requireCleanHumanText(normalizedRole, "role")
+              : normalizedRole,
           recruiterType: params.recruiterType,
-          region: params.region,
+          region: normalizeOptionalStoredText(params.region),
           fitScore: params.fitScore,
           status: isNonBlankString(params.status) ? params.status.trim() : DEFAULT_STATUS,
-          sourceNotes: params.sourceNotes,
-          hook1: params.hook1,
-          hook2: params.hook2,
-          fitSummary: params.fitSummary,
-          connectionNoteDraft: params.connectionNoteDraft,
-          dmDraft: params.dmDraft,
-          emailSubjectDraft: params.emailSubjectDraft,
-          emailBodyDraft: params.emailBodyDraft,
-          mailDraft: params.mailDraft,
-          followup1Draft: params.followup1Draft,
-          followup2Draft: params.followup2Draft,
-          lastReplySummary: params.lastReplySummary,
-          interactionLog: params.interactionLog,
+          sourceNotes: normalizeOptionalStoredText(params.sourceNotes),
+          hook1: normalizeOptionalStoredText(params.hook1),
+          hook2: normalizeOptionalStoredText(params.hook2),
+          fitSummary: normalizeOptionalStoredText(params.fitSummary),
+          connectionNoteDraft: normalizeOptionalStoredText(params.connectionNoteDraft),
+          dmDraft: normalizeOptionalStoredText(params.dmDraft),
+          emailSubjectDraft: normalizeOptionalStoredText(params.emailSubjectDraft),
+          emailBodyDraft: normalizeOptionalStoredText(params.emailBodyDraft),
+          followup1Draft: normalizeOptionalStoredText(params.followup1Draft),
+          followup2Draft: normalizeOptionalStoredText(params.followup2Draft),
+          lastReplySummary: normalizeOptionalStoredText(params.lastReplySummary),
+          interactionLog: normalizeOptionalStoredText(params.interactionLog),
           lastTouchAt: normalizeOptionalIsoDateTime(params.lastTouchAt, "lastTouchAt"),
           nextActionAt: normalizeOptionalIsoDateTime(params.nextActionAt, "nextActionAt"),
           nextActionType: isNonBlankString(params.nextActionType)
@@ -3635,7 +5274,6 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
             "dmDraft",
             "emailSubjectDraft",
             "emailBodyDraft",
-            "mailDraft",
             "followup1Draft",
             "followup2Draft",
           ],
@@ -3649,7 +5287,6 @@ export function registerNotionRecruiterTools(api: OpenClawPluginApi): void {
             dmDraft: params.dmDraft,
             emailSubjectDraft: params.emailSubjectDraft,
             emailBodyDraft: params.emailBodyDraft,
-            mailDraft: params.mailDraft,
             followup1Draft: params.followup1Draft,
             followup2Draft: params.followup2Draft,
           },

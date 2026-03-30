@@ -15,6 +15,7 @@ fi
 
 mkdir -p "${STATE_DIR}"
 mkdir -p "${STATE_DIR}/plugin-state/notion-recruiter-crm"
+mkdir -p "${STATE_DIR}/local-plugins"
 mkdir -p "${STATE_DIR}/workspace"
 mkdir -p "${STATE_DIR}/workspace-research"
 mkdir -p "${STATE_DIR}/workspace-sourcer"
@@ -25,6 +26,17 @@ if [ ! -d /project/config/local-plugins/notion-recruiter-crm ] || [ ! -d /projec
     echo "Bundled project plugins are missing under /project/config/local-plugins"
     exit 1
 fi
+
+sync_plugin_dir() {
+    local source_dir="$1"
+    local target_dir="$2"
+
+    mkdir -p "${target_dir}"
+    cp -a "${source_dir}/." "${target_dir}/"
+}
+
+sync_plugin_dir "/project/config/local-plugins/notion-recruiter-crm" "${STATE_DIR}/local-plugins/notion-recruiter-crm"
+sync_plugin_dir "/project/config/local-plugins/linkedin-research" "${STATE_DIR}/local-plugins/linkedin-research"
 
 if [ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
     printf '%s' "${OPENCLAW_GATEWAY_TOKEN}" > "${TOKEN_FILE}"

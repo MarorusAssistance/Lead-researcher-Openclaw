@@ -127,7 +127,6 @@ La data source debe tener estas propiedades con estos tipos:
 - `DM Draft` (`rich_text`)
 - `Email Subject Draft` (`rich_text`)
 - `Email Body Draft` (`rich_text`)
-- `Mail Draft` (`rich_text`)
 - `Follow Up 1 Draft` (`rich_text`)
 - `Follow Up 2 Draft` (`rich_text`)
 - `Last Reply Summary` (`rich_text`)
@@ -216,7 +215,6 @@ Por page ID:
   "dmDraft": "Thanks for connecting. Sharing a concise intro and profile.",
   "emailSubjectDraft": "AI recruiter candidate for your Madrid searches",
   "emailBodyDraft": "Hi Ana, sharing a concise summary of fit and profile.",
-  "mailDraft": "Hi Ana, attaching a short intro and CV links.",
   "followup1Draft": "Bumping this in case it got buried.",
   "followup2Draft": "Happy to resend the profile if useful."
 }
