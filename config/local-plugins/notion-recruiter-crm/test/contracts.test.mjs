@@ -12,6 +12,7 @@ import {
   awaitRunScopedAssistantJson,
   findRunScopedAssistantReply,
   readRunScopedRequestPayload,
+  readRunScopedToolTrace,
 } from "../dist/src/session-await.js";
 import {
   canonicalizeProspectingRequest,
@@ -52,7 +53,7 @@ function withTempState(state, fn) {
   process.env.PENDING_SHORTLIST_STATE_PATH = path.join(tempDataDir, "pending-shortlist-state.json");
 
   if (state) {
-    saveState(state);
+    saveState(coerceProspectingState(state));
   }
 
   try {
@@ -145,6 +146,65 @@ run("accepts a valid sourcer SOURCE_ONE request", () => {
   );
 
   assert.equal(result.ok, true);
+});
+
+run("canonicalizes SOURCE_ONE exploration hints and explicit overrides", () => {
+  withTempState(
+    {
+      searchedCompanyNames: [],
+      registeredLeadNames: [],
+      updatedAt: "2026-03-29T08:00:00.000Z",
+    },
+    () => {
+      const canonical = canonicalizeProspectingRequest("sourcer_request", {
+        action: "SOURCE_ONE",
+        runId: "run_hints_001",
+        campaignContext: {
+          targetThemes: ["GenAI engineering"],
+          explorationHints: {
+            overusedQueries: [
+              { query: "GenAI engineer Spain", count: 4 },
+              { query: "  genai engineer   spain  ", count: 2 },
+            ],
+            visitedUrls: [
+              "https://example.ai/team?utm_source=test",
+              "https://example.ai/team",
+            ],
+            visitedHosts: [
+              { host: "Example.ai", count: 3 },
+              { host: "example.ai", count: 1 },
+            ],
+          },
+          requestOverrides: {
+            explicitTargetUrls: [
+              "https://example.ai/team?utm_source=test",
+              "https://example.ai/team",
+            ],
+            explicitTargetCompanyNames: ["Example AI", "example ai"],
+          },
+        },
+        excludedCompanyNames: [],
+        excludedLeadNames: [],
+        constraints: {
+          webFirst: true,
+          mustIncludeEvidence: true,
+        },
+      });
+
+      assert.deepEqual(canonical.campaignContext.explorationHints, {
+        overusedQueries: [{ query: "GenAI engineer Spain", count: 4 }],
+        visitedUrls: ["https://example.ai/team"],
+        visitedHosts: [{ host: "example.ai", count: 3 }],
+      });
+      assert.deepEqual(canonical.campaignContext.requestOverrides, {
+        explicitTargetUrls: ["https://example.ai/team"],
+        explicitTargetCompanyNames: ["Example AI"],
+      });
+
+      const result = validateProspectingContract("sourcer_request", canonical);
+      assert.equal(result.ok, true);
+    },
+  );
 });
 
 run("canonicalizes SOURCE_ONE requests with misplaced exclusions", () => {
@@ -1030,6 +1090,11 @@ run("accepts a valid CRM OK response", () => {
         searchedCompanyNames: ["example ai"],
         registeredLeadNames: ["jane doe"],
       },
+      explorationMemory: {
+        visitedUrls: [],
+        queryHistory: [],
+        consecutiveHardMissRuns: 0,
+      },
     },
     {
       expectedAction: "REGISTER_ACCEPTED_LEAD",
@@ -1695,17 +1760,72 @@ run("migrates legacy multi-campaign state into the new global state", () => {
 
   assert.deepEqual(state.searchedCompanyNames, ["example ai", "other co"]);
   assert.deepEqual(state.registeredLeadNames, ["jane doe", "john smith"]);
+  assert.deepEqual(state.explorationMemory, {
+    visitedUrls: [],
+    queryHistory: [],
+    consecutiveHardMissRuns: 0,
+  });
   assert.equal(state.updatedAt, "2026-03-27T17:06:34.308Z");
+});
+
+run("accepts CRM source-trace requests and GET_CAMPAIGN_STATE responses with exploration memory", () => {
+  const request = parseAndValidateProspectingContract(
+    "crm_request",
+    JSON.stringify({
+      action: "REGISTER_SOURCE_TRACE",
+      runId: "run_trace_001",
+      sourceTrace: {
+        queries: ["genai engineer spain"],
+        fetchedUrls: ["https://example.ai/team"],
+        evidenceUrls: [],
+      },
+    }),
+  );
+
+  assert.equal(request.ok, true);
+
+  const response = parseAndValidateProspectingContract(
+    "crm_response",
+    JSON.stringify({
+      status: "OK",
+      action: "GET_CAMPAIGN_STATE",
+      campaignState: {
+        searchedCompanyNames: ["example ai"],
+        registeredLeadNames: ["jane doe"],
+      },
+      explorationMemory: {
+        visitedUrls: [
+          {
+            url: "https://example.ai/team",
+            normalizedUrl: "https://example.ai/team",
+            source: "fetch",
+            firstSeenAt: "2026-03-29T08:00:00.000Z",
+            lastSeenAt: "2026-03-29T08:00:00.000Z",
+          },
+        ],
+        queryHistory: [
+          {
+            query: "genai engineer spain",
+            normalizedQuery: "genai engineer spain",
+            usedAt: "2026-03-29T08:00:00.000Z",
+          },
+        ],
+        consecutiveHardMissRuns: 2,
+      },
+    }),
+  );
+
+  assert.equal(response.ok, true);
 });
 
 run("canonicalizes sourcer requests with persisted campaign exclusions", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "prospecting-state-"));
   process.env.OPENCLAW_STATE_DIR = tempRoot;
-  saveState({
+  saveState(coerceProspectingState({
     searchedCompanyNames: ["maisa"],
     registeredLeadNames: ["david villalón"],
     updatedAt: "2026-03-28T12:08:55.405Z",
-  });
+  }));
 
   const canonical = canonicalizeProspectingRequest("sourcer_request", {
     action: "SOURCE_ONE",
@@ -2481,6 +2601,85 @@ run("reads the matched request payload back from the session store", () => {
       '{"action":"SOURCE_ONE","runId":"run_request_1","excludedCompanyNames":["maisa"],"excludedLeadNames":["david villalón"]}',
     messageTimestamp: "2026-03-28T12:00:00.000Z",
   });
+});
+
+run("extracts run-scoped sourcer tool traces from the session store", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "prospecting-tool-trace-"));
+  process.env.OPENCLAW_STATE_DIR = tempRoot;
+
+  const sessionDir = path.join(tempRoot, "agents", "sourcer", "sessions");
+  fs.mkdirSync(sessionDir, { recursive: true });
+
+  const sessionFile = path.join(sessionDir, "tool-trace.jsonl");
+  const storePath = path.join(sessionDir, "sessions.json");
+  fs.writeFileSync(
+    storePath,
+    JSON.stringify({
+      "agent:sourcer:main": {
+        sessionFile,
+      },
+    }),
+  );
+
+  fs.writeFileSync(
+    sessionFile,
+    [
+      JSON.stringify({
+        type: "message",
+        timestamp: "2026-03-29T09:00:00.000Z",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: '{"action":"SOURCE_ONE","runId":"run_trace_001"}' }],
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        timestamp: "2026-03-29T09:00:01.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              name: "web_search",
+              arguments: { query: "genai engineer spain" },
+            },
+            {
+              type: "toolCall",
+              name: "web_fetch",
+              arguments: { url: "https://example.ai/team?utm_source=test" },
+            },
+            {
+              type: "toolCall",
+              name: "web_fetch",
+              arguments: { url: "https://example.ai/team?utm_source=test" },
+            },
+          ],
+        },
+      }),
+    ].join("\n"),
+  );
+
+  const result = readRunScopedToolTrace({
+    sessionKey: "agent:sourcer:main",
+    runId: "run_trace_001",
+    expectedAction: "SOURCE_ONE",
+  });
+
+  assert.deepEqual(result, {
+    queries: ["genai engineer spain"],
+    fetchedUrls: ["https://example.ai/team?utm_source=test"],
+  });
+});
+
+run("routes explicit query-memory reset requests to CRM", () => {
+  const result = planProspectingMainNextAction({
+    userText: "resetea las queries usadas y vuelve a intentarlo",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.outcome, "send_request");
+  assert.equal(result.request.contract, "crm_request");
+  assert.equal(result.request.expectedAction, "RESET_QUERY_MEMORY");
 });
 
 run("falls back to the latest action request when main passes the transport runId instead of the payload runId", () => {

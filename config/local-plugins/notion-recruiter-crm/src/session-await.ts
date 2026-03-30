@@ -6,6 +6,8 @@ type UnknownRecord = Record<string, unknown>;
 type SessionContentPart = {
   type?: string;
   text?: string;
+  name?: string;
+  arguments?: unknown;
 };
 
 type SessionMessage = {
@@ -85,6 +87,11 @@ type ReplySearchResult =
 export type RequestSearchResult = {
   payloadText: string;
   messageTimestamp: string | null;
+};
+
+export type RunScopedToolTrace = {
+  queries: string[];
+  fetchedUrls: string[];
 };
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -253,6 +260,22 @@ function extractTextParts(entry: SessionEntry): string[] {
     .filter((text) => text.length > 0);
 }
 
+function extractToolCalls(entry: SessionEntry): Array<{ name: string; arguments: UnknownRecord }> {
+  if (entry.type !== "message" || entry.message?.role !== "assistant" || entry.message.content === undefined) {
+    return [];
+  }
+
+  return entry.message.content
+    .filter(
+      (part): part is SessionContentPart =>
+        part.type === "toolCall" && typeof part.name === "string" && isRecord(part.arguments),
+    )
+    .map((part) => ({
+      name: part.name!,
+      arguments: part.arguments as UnknownRecord,
+    }));
+}
+
 function isMatchingRequest(
   entry: SessionEntry,
   runId: string | undefined,
@@ -418,6 +441,82 @@ export function findRunScopedRequestJson(
   return null;
 }
 
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
+}
+
+export function findRunScopedToolTrace(
+  entries: SessionEntry[],
+  runId: string | undefined,
+  expectedAction: string,
+): RunScopedToolTrace | null {
+  if (runId === undefined && expectedAction.trim().length === 0) {
+    throw new Error("expectedAction is required when runId is omitted.");
+  }
+
+  const findRequestIndex = (candidateRunId: string | undefined): number => {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      if (isMatchingRequest(entries[index]!, candidateRunId, expectedAction)) {
+        return index;
+      }
+    }
+
+    return -1;
+  };
+
+  let requestIndex = findRequestIndex(runId);
+  if (requestIndex === -1 && runId !== undefined) {
+    requestIndex = findRequestIndex(undefined);
+  }
+
+  if (requestIndex === -1) {
+    return null;
+  }
+
+  const queries: string[] = [];
+  const fetchedUrls: string[] = [];
+
+  for (let index = requestIndex + 1; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+
+    if (entry.type === "message" && entry.message?.role === "assistant") {
+      for (const text of extractTextParts(entry)) {
+        if (isSkippableControlText(text)) {
+          continue;
+        }
+
+        const payloadText = parseJsonCandidate(text);
+        if (payloadText) {
+          return {
+            queries: dedupeStrings(queries),
+            fetchedUrls: dedupeStrings(fetchedUrls),
+          };
+        }
+
+        return {
+          queries: dedupeStrings(queries),
+          fetchedUrls: dedupeStrings(fetchedUrls),
+        };
+      }
+    }
+
+    for (const toolCall of extractToolCalls(entry)) {
+      if (toolCall.name === "web_search" && typeof toolCall.arguments.query === "string") {
+        queries.push(toolCall.arguments.query);
+      }
+
+      if (toolCall.name === "web_fetch" && typeof toolCall.arguments.url === "string") {
+        fetchedUrls.push(toolCall.arguments.url);
+      }
+    }
+  }
+
+  return {
+    queries: dedupeStrings(queries),
+    fetchedUrls: dedupeStrings(fetchedUrls),
+  };
+}
+
 function parseSessionEntries(sessionFile: string): SessionEntry[] {
   const raw = fs.readFileSync(sessionFile, "utf8");
   const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
@@ -531,4 +630,16 @@ export function readRunScopedRequestPayload(
 
   const entries = parseSessionEntries(sessionFile);
   return findRunScopedRequestJson(entries, input.runId, input.expectedAction);
+}
+
+export function readRunScopedToolTrace(
+  input: Pick<AwaitSessionJsonInput, "sessionKey" | "runId" | "expectedAction">,
+): RunScopedToolTrace | null {
+  const sessionFile = resolveSessionFile(input.sessionKey);
+  if (!sessionFile || !fs.existsSync(sessionFile)) {
+    return null;
+  }
+
+  const entries = parseSessionEntries(sessionFile);
+  return findRunScopedToolTrace(entries, input.runId, input.expectedAction);
 }

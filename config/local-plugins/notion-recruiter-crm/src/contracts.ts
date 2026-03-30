@@ -3,6 +3,7 @@ import { Value } from "@sinclair/typebox/value";
 
 const NullableStringSchema = Type.Union([Type.String({ minLength: 1 }), Type.Null()]);
 const StringArraySchema = Type.Array(Type.String({ minLength: 1 }));
+const NonNegativeIntegerSchema = Type.Integer({ minimum: 0 });
 
 export const ProspectingContractSchema = Type.Union([
   Type.Literal("sourcer_request"),
@@ -19,6 +20,9 @@ export const CrmActionSchema = Type.Union([
   Type.Literal("GET_CAMPAIGN_STATE"),
   Type.Literal("REGISTER_ACCEPTED_LEAD"),
   Type.Literal("REGISTER_REJECTED_CANDIDATE"),
+  Type.Literal("REGISTER_SOURCE_TRACE"),
+  Type.Literal("REGISTER_SEARCH_RUN_RESULT"),
+  Type.Literal("RESET_QUERY_MEMORY"),
   Type.Literal("SAVE_PENDING_SHORTLIST"),
   Type.Literal("GET_PENDING_SHORTLIST"),
   Type.Literal("CLEAR_PENDING_SHORTLIST"),
@@ -32,6 +36,90 @@ export const ProspectingValidationContextSchema = Type.Object(
     maxEnrichRounds: Type.Optional(Type.Integer({ minimum: 0 })),
     excludedCompanyNames: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 500 })),
     excludedLeadNames: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 500 })),
+  },
+  { additionalProperties: false },
+);
+
+export const ExplorationQueryUsageSchema = Type.Object(
+  {
+    query: Type.String({ minLength: 1 }),
+    count: Type.Integer({ minimum: 1 }),
+  },
+  { additionalProperties: false },
+);
+
+export const ExplorationVisitedHostSchema = Type.Object(
+  {
+    host: Type.String({ minLength: 1 }),
+    count: Type.Integer({ minimum: 1 }),
+  },
+  { additionalProperties: false },
+);
+
+export const SourcerExplorationHintsSchema = Type.Object(
+  {
+    overusedQueries: Type.Optional(Type.Array(ExplorationQueryUsageSchema, { maxItems: 20 })),
+    visitedUrls: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 200 })),
+    visitedHosts: Type.Optional(Type.Array(ExplorationVisitedHostSchema, { maxItems: 20 })),
+  },
+  { additionalProperties: false },
+);
+
+export const SourcerRequestOverridesSchema = Type.Object(
+  {
+    explicitTargetUrls: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 })),
+    explicitTargetCompanyNames: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const VisitedUrlRecordSchema = Type.Object(
+  {
+    url: Type.String({ minLength: 1 }),
+    normalizedUrl: Type.String({ minLength: 1 }),
+    source: Type.Union([Type.Literal("fetch"), Type.Literal("evidence")]),
+    firstSeenAt: Type.String({ minLength: 1 }),
+    lastSeenAt: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
+export const QueryHistoryEntrySchema = Type.Object(
+  {
+    query: Type.String({ minLength: 1 }),
+    normalizedQuery: Type.String({ minLength: 1 }),
+    usedAt: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
+export const ExplorationMemorySchema = Type.Object(
+  {
+    visitedUrls: Type.Array(VisitedUrlRecordSchema),
+    queryHistory: Type.Array(QueryHistoryEntrySchema),
+    consecutiveHardMissRuns: NonNegativeIntegerSchema,
+  },
+  { additionalProperties: false },
+);
+
+export const SourceTraceSchema = Type.Object(
+  {
+    queries: Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 }),
+    fetchedUrls: Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 }),
+    evidenceUrls: Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 }),
+  },
+  { additionalProperties: false },
+);
+
+export const SearchRunOutcomeSchema = Type.Object(
+  {
+    outcome: Type.Union([
+      Type.Literal("SUCCESS"),
+      Type.Literal("SOFT_MISS"),
+      Type.Literal("HARD_MISS"),
+    ]),
   },
   { additionalProperties: false },
 );
@@ -78,6 +166,8 @@ export const CandidateSchema = Type.Object(
 const SourcerCampaignContextSchema = Type.Object(
   {
     targetThemes: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+    explorationHints: Type.Optional(SourcerExplorationHintsSchema),
+    requestOverrides: Type.Optional(SourcerRequestOverridesSchema),
   },
   { additionalProperties: false },
 );
@@ -434,8 +524,12 @@ export const CrmCampaignStateOkResponseSchema = Type.Object(
       Type.Literal("GET_CAMPAIGN_STATE"),
       Type.Literal("REGISTER_ACCEPTED_LEAD"),
       Type.Literal("REGISTER_REJECTED_CANDIDATE"),
+      Type.Literal("REGISTER_SOURCE_TRACE"),
+      Type.Literal("REGISTER_SEARCH_RUN_RESULT"),
+      Type.Literal("RESET_QUERY_MEMORY"),
     ]),
     campaignState: CampaignStateSchema,
+    explorationMemory: ExplorationMemorySchema,
   },
   { additionalProperties: false },
 );
@@ -557,6 +651,32 @@ export const CrmRegisterRejectedCandidateRequestSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const CrmRegisterSourceTraceRequestSchema = Type.Object(
+  {
+    action: Type.Literal("REGISTER_SOURCE_TRACE"),
+    runId: Type.Optional(Type.String({ minLength: 1 })),
+    sourceTrace: SourceTraceSchema,
+  },
+  { additionalProperties: false },
+);
+
+export const CrmRegisterSearchRunResultRequestSchema = Type.Object(
+  {
+    action: Type.Literal("REGISTER_SEARCH_RUN_RESULT"),
+    runId: Type.Optional(Type.String({ minLength: 1 })),
+    result: SearchRunOutcomeSchema,
+  },
+  { additionalProperties: false },
+);
+
+export const CrmResetQueryMemoryRequestSchema = Type.Object(
+  {
+    action: Type.Literal("RESET_QUERY_MEMORY"),
+    runId: Type.Optional(Type.String({ minLength: 1 })),
+  },
+  { additionalProperties: false },
+);
+
 export const CrmSavePendingShortlistRequestSchema = Type.Object(
   {
     action: Type.Literal("SAVE_PENDING_SHORTLIST"),
@@ -594,6 +714,9 @@ export const CrmRequestSchema = Type.Union([
   CrmGetCampaignStateRequestSchema,
   CrmRegisterAcceptedLeadRequestSchema,
   CrmRegisterRejectedCandidateRequestSchema,
+  CrmRegisterSourceTraceRequestSchema,
+  CrmRegisterSearchRunResultRequestSchema,
+  CrmResetQueryMemoryRequestSchema,
   CrmSavePendingShortlistRequestSchema,
   CrmGetPendingShortlistRequestSchema,
   CrmClearPendingShortlistRequestSchema,
@@ -1141,6 +1264,16 @@ function validateCrmRequest(payload: unknown): ProspectingValidationResult {
   if (parsed.action === "SAVE_PENDING_SHORTLIST") {
     if (parsed.pendingShortlist.options.length === 0) {
       issues.push("SAVE_PENDING_SHORTLIST must include at least one shortlist option.");
+    }
+  }
+
+  if (parsed.action === "REGISTER_SOURCE_TRACE") {
+    const traceCount =
+      parsed.sourceTrace.queries.length +
+      parsed.sourceTrace.fetchedUrls.length +
+      parsed.sourceTrace.evidenceUrls.length;
+    if (traceCount === 0) {
+      issues.push("REGISTER_SOURCE_TRACE must include at least one query or URL.");
     }
   }
 
